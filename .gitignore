@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+.vscode/
+
+# Caches and artifacts
+.hf_cache/
+checkpoints/
+results/
+.wandb/
+.streamlit/
+
+# Logs and temporary files
+*.log
+*.tmp
+/tmp/
