@@ -29,6 +29,7 @@ help:
 	@echo "  make advanced-cloud        - Full production (dual-layer LLM + auto-PDF)"
 	@echo "  make advanced-best         - Maximum quality run (ultra 20-30GB dataset)"
 	@echo "  make predownload-ultra     - Download models/datasets only (no training)"
+	@echo "  make professor-run         - Download + full training + organize results"
 	@echo ""
 	@echo "AWS EC2 DEPLOYMENT (🚀 Recommended for Professor):"
 	@echo "  make aws-help                - Print AWS quick start guide"
@@ -215,6 +216,15 @@ predownload-ultra:
 			--max-rows-per-source 40000
 	@echo "Cache usage:"
 	@du -sh .hf_cache || true
+
+professor-run:
+	@echo "Step 1/3: predownload models and datasets"
+	@$(MAKE) predownload-ultra
+	@echo "Step 2/3: full training run"
+	@$(MAKE) advanced-best
+	@echo "Step 3/3: organize final paper folder"
+	@python scripts/organize_paper_data.py checkpoints/advanced-best-ultra checkpoints/research_paper_data
+	@echo "Complete: share checkpoints/research_paper_data"
 
 # ═══════════════════════════════════════════════════════════════════
 # AWS EC2 DEPLOYMENT TARGETS (NEW)
