@@ -220,6 +220,7 @@ predownload-ultra:
 professor-run:
 	@echo "Professor one-command run (strict + reproducible)"
 	@mkdir -p data/hf_datasets models/hf_models models/hf_hub checkpoints/professor-run
+	@python -c "import torch,sys; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA devices:', torch.cuda.device_count()); sys.exit(0 if torch.cuda.is_available() else 1)" || (echo "ERROR: CUDA is not available. Install a CUDA-enabled PyTorch build and run again." && exit 1)
 	@CONFIG_PATH="configs/multimodal_cloud.json"; \
 	SOURCE_LIST="mine_gdrive,mine,emoticon,raza,coco"; \
 	if [ -z "$$MINE_GDRIVE_ROOT" ] || [ ! -d "$$MINE_GDRIVE_ROOT" ]; then \
@@ -240,13 +241,22 @@ professor-run:
 		--cache-dir data/hf_datasets \
 		--report-path data/source_availability_report.json \
 		--output-json data/cloud_dataset_check.json; \
+	GPU_COUNT=$$(python -c "import torch; print(torch.cuda.device_count())"); \
+	echo "Using $$GPU_COUNT CUDA GPU(s)"; \
 	HF_DATASETS_CACHE="$$PWD/data/hf_datasets" \
 	TRANSFORMERS_CACHE="$$PWD/models/hf_models" \
 	HF_HOME="$$PWD/models/hf_hub" \
-	python scripts/train_multimodal_cloud.py \
-		--config "$$CONFIG_PATH" \
-		--strict-preflight \
-		--output-dir checkpoints/professor-run
+	if [ $$GPU_COUNT -gt 1 ]; then \
+		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_multimodal_cloud.py \
+			--config "$$CONFIG_PATH" \
+			--strict-preflight \
+			--output-dir checkpoints/professor-run; \
+	else \
+		python scripts/train_multimodal_cloud.py \
+			--config "$$CONFIG_PATH" \
+			--strict-preflight \
+			--output-dir checkpoints/professor-run; \
+	fi
 	@echo "Complete: checkpoints/professor-run"
 
 # ═══════════════════════════════════════════════════════════════════
