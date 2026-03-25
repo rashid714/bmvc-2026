@@ -28,6 +28,9 @@ from data.cloud_datasets import (
     RazaIntentDatasetLoader,
     MSCOCOCaptionsLoader,
     VoxCelebDatasetLoader,
+    GoEmotionsDatasetLoader,
+    DailyDialogDatasetLoader,
+    TweetEvalEmotionDatasetLoader,
 )
 
 LOGGER = logging.getLogger("predownload_assets")
@@ -40,11 +43,11 @@ def setup_logging() -> None:
 def resolve_dataset_plan(profile: str, max_rows_per_source: int | None, sources: list[str] | None) -> tuple[list[str], int, int]:
     if sources is None:
         if profile == "ultra_30gb":
-            sources = ["mine", "emoticon", "raza", "coco", "voxceleb"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco", "voxceleb"]
         elif profile == "large_20gb":
-            sources = ["mine", "emoticon", "raza", "coco"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco"]
         else:
-            sources = ["mine", "emoticon", "raza"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
 
     if max_rows_per_source is None:
         if profile == "ultra_30gb":
@@ -82,6 +85,9 @@ def _load_split_with_fallback(loader: Callable[[str, int | None], list], preferr
 
 def warm_datasets(sources: list[str], train_rows: int, val_rows: int) -> None:
     loaders: dict[str, Callable[[str, int | None], list]] = {
+        "goemotions": GoEmotionsDatasetLoader.load_split,
+        "dailydialog": DailyDialogDatasetLoader.load_split,
+        "tweet_eval": TweetEvalEmotionDatasetLoader.load_split,
         "mine": MINEDatasetLoader.load_mine_split,
         "emoticon": EmoticonDatasetLoader.load_emoticon_split,
         "raza": RazaIntentDatasetLoader.load_intent_split,
