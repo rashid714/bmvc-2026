@@ -231,9 +231,9 @@ professor-run:
 	else \
 		echo "Using mine_gdrive source from MINE_GDRIVE_ROOT=$$MINE_GDRIVE_ROOT"; \
 	fi; \
-	HF_DATASETS_CACHE="$$PWD/data/hf_datasets" \
-	TRANSFORMERS_CACHE="$$PWD/models/hf_models" \
-	HF_HOME="$$PWD/models/hf_hub" \
+	export HF_DATASETS_CACHE="$$PWD/data/hf_datasets"; \
+	export TRANSFORMERS_CACHE="$$PWD/models/hf_models"; \
+	export HF_HOME="$$PWD/models/hf_hub"; \
 	python scripts/check_cloud_dataset_ready.py \
 		--run-twice \
 		--sources "$$SOURCE_LIST" \
@@ -243,9 +243,6 @@ professor-run:
 		--output-json data/cloud_dataset_check.json; \
 	GPU_COUNT=$$(python -c "import torch; print(torch.cuda.device_count())"); \
 	echo "Using $$GPU_COUNT CUDA GPU(s)"; \
-	HF_DATASETS_CACHE="$$PWD/data/hf_datasets" \
-	TRANSFORMERS_CACHE="$$PWD/models/hf_models" \
-	HF_HOME="$$PWD/models/hf_hub" \
 	if [ $$GPU_COUNT -gt 1 ]; then \
 		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_multimodal_cloud.py \
 			--config "$$CONFIG_PATH" \
