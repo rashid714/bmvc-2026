@@ -23,6 +23,19 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+def _repo_dataset_cache_dir() -> str:
+    return str((Path.cwd() / "data" / "hf_datasets").resolve())
+
+
+def _repo_model_cache_dir() -> str:
+    return str((Path.cwd() / "models" / "hf_models").resolve())
+
+
+def _hf_load_dataset(*args, **kwargs):
+    kwargs.setdefault("cache_dir", _repo_dataset_cache_dir())
+    return load_dataset(*args, **kwargs)
+
+
 @dataclass
 class MultimodalSample:
     """Unified multimodal data representation."""
@@ -68,7 +81,7 @@ class MINEDatasetLoader:
             last_error = None
             for ds_id in MINEDatasetLoader.MINE_HF_IDS:
                 try:
-                    dataset = load_dataset(ds_id, split=split)
+                    dataset = _hf_load_dataset(ds_id, split=split)
                     logger.info(f"Using MINE dataset id: {ds_id}")
                     break
                 except Exception as e:
@@ -124,7 +137,7 @@ class EmoticonDatasetLoader:
             last_error = None
             for ds_id in EmoticonDatasetLoader.EMOTICON_HF_IDS:
                 try:
-                    dataset = load_dataset(ds_id, split=split)
+                    dataset = _hf_load_dataset(ds_id, split=split)
                     logger.info(f"Using Emoticon dataset id: {ds_id}")
                     break
                 except Exception as e:
@@ -180,7 +193,7 @@ class RazaIntentDatasetLoader:
             for ds_id in RazaIntentDatasetLoader.RAZA_HF_IDS:
                 try:
                     normalized_id = ds_id.replace(" ", "_")
-                    dataset = load_dataset(normalized_id, split=split)
+                    dataset = _hf_load_dataset(normalized_id, split=split)
                     logger.info(f"Using RAZA dataset id: {normalized_id}")
                     break
                 except Exception as e:
@@ -241,7 +254,7 @@ class MSCOCOCaptionsLoader:
             for ds_id in MSCOCOCaptionsLoader.COCO_HF_IDS:
                 try:
                     normalized_id = ds_id.replace(" ", "_")
-                    dataset = load_dataset(normalized_id, split=split)
+                    dataset = _hf_load_dataset(normalized_id, split=split)
                     logger.info(f"Using COCO captions dataset id: {normalized_id}")
                     break
                 except Exception as e:
@@ -292,7 +305,7 @@ class VoxCelebDatasetLoader:
             last_error = None
             for ds_id in VoxCelebDatasetLoader.VOXCELEB_HF_IDS:
                 try:
-                    dataset = load_dataset(ds_id, split=split)
+                    dataset = _hf_load_dataset(ds_id, split=split)
                     logger.info(f"Using VoxCeleb dataset id: {ds_id}")
                     break
                 except Exception as e:
@@ -430,10 +443,10 @@ class GoEmotionsDatasetLoader:
         try:
             logger.info(f"Loading GoEmotions ({split} split)...")
             try:
-                dataset = load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split=split)
+                dataset = _hf_load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split=split)
             except Exception as split_err:
                 logger.warning(f"GoEmotions split '{split}' unavailable ({split_err}). Falling back to train split.")
-                dataset = load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split="train")
+                dataset = _hf_load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split="train")
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
 
@@ -470,7 +483,7 @@ class DailyDialogDatasetLoader:
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
             logger.info(f"Loading DailyDialog ({split} split)...")
-            dataset = load_dataset(DailyDialogDatasetLoader.HF_ID, split=split)
+            dataset = _hf_load_dataset(DailyDialogDatasetLoader.HF_ID, split=split)
 
             samples = []
             for item in dataset:
@@ -498,7 +511,7 @@ class DailyDialogDatasetLoader:
         except Exception as e:
             logger.warning(f"DailyDialog unavailable ({e}). Falling back to AG News for this source.")
             try:
-                dataset = load_dataset("ag_news", split=split)
+                dataset = _hf_load_dataset("ag_news", split=split)
                 if limit:
                     dataset = dataset.select(range(min(limit, len(dataset))))
 
@@ -532,7 +545,7 @@ class TweetEvalEmotionDatasetLoader:
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
             logger.info(f"Loading TweetEval emotion ({split} split)...")
-            dataset = load_dataset(TweetEvalEmotionDatasetLoader.HF_ID, TweetEvalEmotionDatasetLoader.SUBSET, split=split)
+            dataset = _hf_load_dataset(TweetEvalEmotionDatasetLoader.HF_ID, TweetEvalEmotionDatasetLoader.SUBSET, split=split)
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
 
@@ -676,7 +689,7 @@ def get_cloud_dataloaders(
     os.environ["HF_HUB_CACHE"] = str(model_hub_cache)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
 
-    tokenizer = AutoTokenizer.from_pretrained("roberta-large")
+    tokenizer = AutoTokenizer.from_pretrained("roberta-large", cache_dir=os.environ.get("TRANSFORMERS_CACHE", _repo_model_cache_dir()))
     
     if sources is None:
         if dataset_profile == "ultra_30gb":
