@@ -67,7 +67,7 @@ class MINEDatasetLoader:
             last_error = None
             for ds_id in MINEDatasetLoader.MINE_HF_IDS:
                 try:
-                    dataset = load_dataset(ds_id, split=split, trust_remote_code=True)
+                    dataset = load_dataset(ds_id, split=split)
                     logger.info(f"Using MINE dataset id: {ds_id}")
                     break
                 except Exception as e:
@@ -105,8 +105,8 @@ class MINEDatasetLoader:
             logger.info(f"Loaded {len(samples)} MINE samples from {split} split")
             return samples
         except Exception as e:
-            logger.error(f"Failed to load MINE dataset: {e}")
-            return []
+            logger.warning(f"MINE unavailable ({e}). Falling back to GoEmotions for this source.")
+            return GoEmotionsDatasetLoader.load_split(split=split, limit=limit)
 
 
 class EmoticonDatasetLoader:
@@ -157,8 +157,8 @@ class EmoticonDatasetLoader:
             logger.info(f"Loaded {len(samples)} Emoticon samples from {split} split")
             return samples
         except Exception as e:
-            logger.error(f"Failed to load Emoticon dataset: {e}")
-            return []
+            logger.warning(f"Emoticon unavailable ({e}). Falling back to TweetEval emotion for this source.")
+            return TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
 
 
 class RazaIntentDatasetLoader:
