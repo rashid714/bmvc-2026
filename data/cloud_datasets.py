@@ -873,7 +873,8 @@ class CloudMultimodalDataset(Dataset):
         batch = {
             "input_ids": text_encoding["input_ids"].squeeze(0),
             "attention_mask": text_encoding["attention_mask"].squeeze(0),
-            "emotion_label": torch.tensor(sample.emotion_label, dtype=torch.long),
+            # Some sources supervise only intention/action. Keep emotion target valid for joint loss.
+            "emotion_label": torch.tensor(max(0, int(sample.emotion_label)), dtype=torch.long),
             "source": sample.source_dataset,
         }
         # Backward-compatible alias used by advanced training script.

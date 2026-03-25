@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import time
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -74,6 +75,24 @@ def main() -> None:
     parser.add_argument("--report-path", type=str, default="data/source_availability_report.json")
     parser.add_argument("--run-twice", action="store_true", help="Run twice to verify no double download behavior")
     parser.add_argument("--output-json", type=str, default="data/cloud_dataset_check.json")
+    parser.add_argument("--require-min-samples", type=int, default=1)
+    parser.add_argument(
+        "--require-modalities",
+        type=str,
+        default="text",
+        help="Comma-separated required modalities from: text,image,audio,video",
+    )
+    parser.add_argument(
+        "--strict-mine-gdrive",
+        action="store_true",
+        help="Fail if mine_gdrive requested but MINE_GDRIVE_ROOT/manifest is missing",
+    )
+    parser.add_argument(
+        "--max-cache-growth-mb-run2",
+        type=float,
+        default=-1.0,
+        help="If set >=0 and --run-twice, fail when cache growth on run2 exceeds this threshold",
+    )
     args = parser.parse_args()
 
     repo_root = Path.cwd()
@@ -93,6 +112,29 @@ def main() -> None:
     os.environ.setdefault("HUGGINGFACE_HUB_CACHE", os.environ["HF_HUB_CACHE"])
 
     sources = [s.strip() for s in args.sources.split(",") if s.strip()]
+
+    if args.strict_mine_gdrive and any(s.lower() in {"mine_gdrive", "mine_drive", "mine_google_drive"} for s in sources):
+        root = os.environ.get("MINE_GDRIVE_ROOT", "").strip()
+        if not root:
+            raise SystemExit("STRICT CHECK FAILED: mine_gdrive requested but MINE_GDRIVE_ROOT is not set")
+        root_path = Path(root).expanduser().resolve()
+        if not root_path.exists() or not root_path.is_dir():
+            raise SystemExit(f"STRICT CHECK FAILED: MINE_GDRIVE_ROOT does not exist: {root_path}")
+        manifest_candidates = [
+            "manifest.jsonl",
+            "manifest.json",
+            "metadata.jsonl",
+            "metadata.json",
+            "annotations.jsonl",
+            "annotations.json",
+            "data.jsonl",
+            "data.json",
+        ]
+        if not any((root_path / m).exists() for m in manifest_candidates):
+            raise SystemExit(
+                f"STRICT CHECK FAILED: no metadata manifest found under {root_path} "
+                "(expected one of manifest/metadata/annotations/data json or jsonl files)"
+            )
 
     before_size = dir_size_bytes(cache_dir)
     run1 = run_once(
@@ -127,10 +169,41 @@ def main() -> None:
         result["cache_size_mb_after_run2"] = format_mb(after_run2)
         result["cache_growth_mb_run2"] = format_mb(after_run2 - after_run1)
 
+    failures: list[str] = []
+    required_modalities = [m.strip().lower() for m in args.require_modalities.split(",") if m.strip()]
+    allowed = {"text", "image", "audio", "video"}
+    invalid_modalities = [m for m in required_modalities if m not in allowed]
+    if invalid_modalities:
+        failures.append(f"Invalid require-modalities values: {invalid_modalities}")
+
+    min_samples = max(0, int(args.require_min_samples))
+    run1 = result["run1"]
+    if int(run1["total_samples"]) < min_samples:
+        failures.append(
+            f"Run1 loaded only {run1['total_samples']} samples, required >= {min_samples}"
+        )
+
+    for modality in required_modalities:
+        if int(run1["modality_counts"].get(modality, 0)) <= 0:
+            failures.append(f"Required modality missing in run1: {modality}")
+
+    if args.run_twice and args.max_cache_growth_mb_run2 >= 0:
+        growth2 = float(result.get("cache_growth_mb_run2", 0.0))
+        if growth2 > float(args.max_cache_growth_mb_run2):
+            failures.append(
+                f"Run2 cache growth {growth2} MB exceeded threshold {args.max_cache_growth_mb_run2} MB"
+            )
+
+    result["status"] = "ok" if not failures else "failed"
+    result["failures"] = failures
+
     output_json.write_text(json.dumps(result, indent=2), encoding="utf-8")
 
     print(json.dumps(result, indent=2))
     print(f"Saved dataset readiness report to {output_json}")
+
+    if failures:
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,72 @@ from training.eval import evaluate_tritask
 logger = logging.getLogger(__name__)
 
 
+def ensure_repo_cache_paths(config: dict, repo_root: Path) -> None:
+    """Force all HF caches into the repository for reproducible and controlled storage."""
+    hf_cache_dir = (repo_root / "data" / "hf_datasets").resolve()
+    model_cache_dir = (repo_root / "models" / "hf_models").resolve()
+    hub_cache_dir = (repo_root / "models" / "hf_hub").resolve()
+    hf_home = (repo_root / ".hf_home").resolve()
+
+    for p in (hf_cache_dir, model_cache_dir, hub_cache_dir, hf_home):
+        p.mkdir(parents=True, exist_ok=True)
+
+    os.environ["HF_HOME"] = str(hf_home)
+    os.environ["HF_DATASETS_CACHE"] = str(hf_cache_dir)
+    os.environ["TRANSFORMERS_CACHE"] = str(model_cache_dir)
+    os.environ["HF_HUB_CACHE"] = str(hub_cache_dir)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache_dir)
+
+    config["hf_cache_dir"] = str(hf_cache_dir)
+    config["model_cache_dir"] = str(model_cache_dir)
+    config["hf_hub_cache_dir"] = str(hub_cache_dir)
+
+
+def preflight_validate_config(config: dict, repo_root: Path) -> None:
+    """Fail fast on common setup problems to avoid long failing jobs."""
+    sources = [str(s).lower() for s in config.get("cloud_sources", [])]
+
+    if not sources:
+        raise ValueError("cloud_sources is empty. Add at least one dataset source in config.")
+
+    if any(s in {"mine_gdrive", "mine_drive", "mine_google_drive"} for s in sources):
+        mine_root = config.get("mine_gdrive_root") or os.environ.get("MINE_GDRIVE_ROOT", "")
+        if not mine_root:
+            raise ValueError(
+                "mine_gdrive requested but mine_gdrive_root/MINE_GDRIVE_ROOT is missing. "
+                "Set it to the extracted Google Drive dataset folder."
+            )
+
+        mine_root_path = Path(mine_root).expanduser()
+        if not mine_root_path.is_absolute():
+            mine_root_path = (repo_root / mine_root_path).resolve()
+        else:
+            mine_root_path = mine_root_path.resolve()
+
+        if not mine_root_path.exists() or not mine_root_path.is_dir():
+            raise ValueError(f"mine_gdrive_root path not found: {mine_root_path}")
+
+        manifest_candidates = [
+            "manifest.jsonl",
+            "manifest.json",
+            "metadata.jsonl",
+            "metadata.json",
+            "annotations.jsonl",
+            "annotations.json",
+            "data.jsonl",
+            "data.json",
+        ]
+        if not any((mine_root_path / name).exists() for name in manifest_candidates):
+            raise ValueError(
+                f"No metadata manifest found under {mine_root_path}. "
+                "Expected one of manifest/metadata/annotations/data .json or .jsonl files."
+            )
+
+        # Keep resolved path in config/env for consistency across all loaders.
+        config["mine_gdrive_root"] = str(mine_root_path)
+        os.environ["MINE_GDRIVE_ROOT"] = str(mine_root_path)
+
+
 def setup_distributed():
     """Initialize distributed training environment."""
     if "RANK" not in os.environ:
@@ -325,10 +391,11 @@ def run_seed(
         num_workers=config.get("num_workers", 4),
         sources=config.get("cloud_sources", ["mine", "emoticon", "raza"]),
         mine_gdrive_root=config.get("mine_gdrive_root"),
+        cache_dir=config.get("hf_cache_dir"),
         max_samples={
             "train": config.get("max_rows_per_source", 5000),
-            "validation": config.get("max_rows_per_source", 5000) // 5,
-            "test": config.get("max_rows_per_source", 5000) // 5,
+            "validation": max(1, config.get("max_rows_per_source", 5000) // 5),
+            "test": max(1, config.get("max_rows_per_source", 5000) // 5),
         },
     )
     
@@ -511,6 +578,11 @@ def main():
         action="store_true",
         help="Enable FP16 mixed precision",
     )
+    parser.add_argument(
+        "--strict-preflight",
+        action="store_true",
+        help="Fail fast on missing mine_gdrive path/manifest and other preflight issues",
+    )
     
     args = parser.parse_args()
     
@@ -553,6 +625,16 @@ def main():
     config.setdefault("text_backbone", "distilroberta-base")
     config.setdefault("hidden_dim", 768)
     config.setdefault("cloud_sources", ["mine", "emoticon", "raza"])
+    config.setdefault("strict_preflight", True)
+
+    if args.strict_preflight:
+        config["strict_preflight"] = True
+
+    repo_root = Path.cwd().resolve()
+    ensure_repo_cache_paths(config, repo_root)
+
+    if config.get("strict_preflight", True):
+        preflight_validate_config(config, repo_root)
     
     # Setup logging
     setup_logging(rank, output_dir)

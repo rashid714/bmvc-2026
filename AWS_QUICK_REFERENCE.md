@@ -73,6 +73,7 @@ make multimodal-smoke
 torchrun --nproc_per_node=4 \
   scripts/train_multimodal_cloud.py \
   --config configs/multimodal_cloud.json \
+  --strict-preflight \
   --output-dir checkpoints/results-final
 ```
 
@@ -100,6 +101,22 @@ Then inspect:
 
 If `cache_growth_mb_run2` is near `0`, cache reuse worked and datasets were not re-downloaded.
 
+For strict no-error verification, use:
+
+```bash
+cd ~/bmvc-2026
+python scripts/check_cloud_dataset_ready.py \
+  --run-twice \
+  --strict-mine-gdrive \
+  --require-min-samples 10 \
+  --require-modalities text,image,video \
+  --max-cache-growth-mb-run2 50 \
+  --sources mine_gdrive,mine,emoticon,raza,coco \
+  --output-json data/cloud_dataset_check.json
+```
+
+If this command exits with code `0`, preflight checks passed.
+
 ## 📁 Add MINE Google Drive Dataset (AWS only)
 
 Use this only on the AWS machine to avoid large local downloads.
@@ -119,6 +136,12 @@ export MINE_GDRIVE_ROOT="$PWD/data/mine_gdrive"
 
 Then run training as usual. The pipeline now reads source `mine_gdrive` from `data/mine_gdrive` and will skip it safely if not present.
 
+Recommended full run order on AWS:
+1. Download and extract MINE Google Drive data into `data/mine_gdrive`
+2. Run strict dataset check command above
+3. Start training with `--strict-preflight`
+4. Monitor `checkpoints/results-final/training.log`
+
 ## 💻 Local Powerful Machine (Same Workflow)
 
 Yes, the same scripts run locally as well if the machine is strong enough.
@@ -130,6 +153,7 @@ Yes, the same scripts run locally as well if the machine is strong enough.
 cd /path/to/bmvc-2026
 python scripts/train_multimodal_cloud.py \
   --config configs/multimodal_cloud.json \
+  --strict-preflight \
   --output-dir checkpoints/local-results
 ```
 
