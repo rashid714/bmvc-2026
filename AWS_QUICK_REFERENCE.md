@@ -76,6 +76,30 @@ torchrun --nproc_per_node=4 \
   --output-dir checkpoints/results-final
 ```
 
+## 🧪 Check Cloud Datasets First (Download Once)
+
+Before long training, run a readiness check that:
+- downloads datasets into repo folder cache,
+- verifies modality coverage (text/image/audio/video when available),
+- runs twice to confirm cache reuse (no duplicate full download).
+
+```bash
+cd ~/bmvc-2026
+python scripts/check_cloud_dataset_ready.py \
+  --run-twice \
+  --train-rows 200 \
+  --val-rows 40 \
+  --cache-dir data/hf_datasets \
+  --report-path data/source_availability_report.json \
+  --output-json data/cloud_dataset_check.json
+```
+
+Then inspect:
+- `data/cloud_dataset_check.json`
+- `data/source_availability_report.json`
+
+If `cache_growth_mb_run2` is near `0`, cache reuse worked and datasets were not re-downloaded.
+
 ## 📁 Add MINE Google Drive Dataset (AWS only)
 
 Use this only on the AWS machine to avoid large local downloads.
@@ -94,6 +118,20 @@ export MINE_GDRIVE_ROOT="$PWD/data/mine_gdrive"
 ```
 
 Then run training as usual. The pipeline now reads source `mine_gdrive` from `data/mine_gdrive` and will skip it safely if not present.
+
+## 💻 Local Powerful Machine (Same Workflow)
+
+Yes, the same scripts run locally as well if the machine is strong enough.
+
+1) Dataset check first (same command as above)
+2) Training:
+
+```bash
+cd /path/to/bmvc-2026
+python scripts/train_multimodal_cloud.py \
+  --config configs/multimodal_cloud.json \
+  --output-dir checkpoints/local-results
+```
 
 **What to expect:**
 - Training starts immediately
