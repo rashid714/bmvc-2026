@@ -422,7 +422,11 @@ class GoEmotionsDatasetLoader:
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
             logger.info(f"Loading GoEmotions ({split} split)...")
-            dataset = load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split=split)
+            try:
+                dataset = load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split=split)
+            except Exception as split_err:
+                logger.warning(f"GoEmotions split '{split}' unavailable ({split_err}). Falling back to train split.")
+                dataset = load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split="train")
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
 
