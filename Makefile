@@ -218,13 +218,36 @@ predownload-ultra:
 	@du -sh .hf_cache || true
 
 professor-run:
-	@echo "Step 1/3: predownload models and datasets"
-	@$(MAKE) predownload-ultra
-	@echo "Step 2/3: full training run"
-	@$(MAKE) advanced-best
-	@echo "Step 3/3: organize final paper folder"
-	@python scripts/organize_paper_data.py checkpoints/advanced-best-ultra checkpoints/research_paper_data
-	@echo "Complete: share checkpoints/research_paper_data"
+	@echo "Professor one-command run (strict + reproducible)"
+	@mkdir -p data/hf_datasets models/hf_models models/hf_hub checkpoints/professor-run
+	@CONFIG_PATH="configs/multimodal_cloud.json"; \
+	SOURCE_LIST="mine_gdrive,mine,emoticon,raza,coco"; \
+	if [ -z "$$MINE_GDRIVE_ROOT" ] || [ ! -d "$$MINE_GDRIVE_ROOT" ]; then \
+		echo "MINE_GDRIVE_ROOT not set/found -> running without mine_gdrive source"; \
+		python -c "import json, pathlib; cfg=json.load(open('configs/multimodal_cloud.json','r',encoding='utf-8')); cfg['cloud_sources']=[s for s in cfg.get('cloud_sources',[]) if s!='mine_gdrive']; pathlib.Path('/tmp/multimodal_cloud_nominegdrive.json').write_text(json.dumps(cfg), encoding='utf-8')"; \
+		CONFIG_PATH="/tmp/multimodal_cloud_nominegdrive.json"; \
+		SOURCE_LIST="mine,emoticon,raza,coco"; \
+	else \
+		echo "Using mine_gdrive source from MINE_GDRIVE_ROOT=$$MINE_GDRIVE_ROOT"; \
+	fi; \
+	HF_DATASETS_CACHE="$$PWD/data/hf_datasets" \
+	TRANSFORMERS_CACHE="$$PWD/models/hf_models" \
+	HF_HOME="$$PWD/models/hf_hub" \
+	python scripts/check_cloud_dataset_ready.py \
+		--run-twice \
+		--sources "$$SOURCE_LIST" \
+		--train-rows 2 --val-rows 1 \
+		--cache-dir data/hf_datasets \
+		--report-path data/source_availability_report.json \
+		--output-json data/cloud_dataset_check.json; \
+	HF_DATASETS_CACHE="$$PWD/data/hf_datasets" \
+	TRANSFORMERS_CACHE="$$PWD/models/hf_models" \
+	HF_HOME="$$PWD/models/hf_hub" \
+	python scripts/train_multimodal_cloud.py \
+		--config "$$CONFIG_PATH" \
+		--strict-preflight \
+		--output-dir checkpoints/professor-run
+	@echo "Complete: checkpoints/professor-run"
 
 # ═══════════════════════════════════════════════════════════════════
 # AWS EC2 DEPLOYMENT TARGETS (NEW)
