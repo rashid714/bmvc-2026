@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -654,7 +655,22 @@ def get_cloud_dataloaders(
         )
     """
     from transformers import AutoTokenizer
-    
+
+    # Keep all HF downloads inside this repository by default.
+    if cache_dir is None:
+        cache_dir = str((Path.cwd() / ".hf_cache" / "datasets").resolve())
+    cache_path = Path(cache_dir).resolve()
+    hf_home = cache_path.parent
+    hf_hub = hf_home / "hub"
+    hf_xet = hf_home / "xet"
+    hf_home.mkdir(parents=True, exist_ok=True)
+    cache_path.mkdir(parents=True, exist_ok=True)
+    hf_hub.mkdir(parents=True, exist_ok=True)
+    hf_xet.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(hf_home)
+    os.environ["HF_DATASETS_CACHE"] = str(cache_path)
+    os.environ["TRANSFORMERS_CACHE"] = str(hf_hub)
+
     tokenizer = AutoTokenizer.from_pretrained("roberta-large")
     
     if sources is None:
@@ -688,6 +704,9 @@ def get_cloud_dataloaders(
         sources,
         max_samples.get("train"),
     )
+    logger.info("HF_HOME=%s", os.environ.get("HF_HOME"))
+    logger.info("HF_DATASETS_CACHE=%s", os.environ.get("HF_DATASETS_CACHE"))
+    logger.info("TRANSFORMERS_CACHE=%s", os.environ.get("TRANSFORMERS_CACHE"))
     if dataset_profile in {"large_20gb", "ultra_30gb"}:
         logger.info(
             "Large dataset mode enabled. Expected first-run cache: ~20-30GB depending on source availability."

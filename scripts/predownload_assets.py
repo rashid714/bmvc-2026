@@ -131,11 +131,19 @@ def main() -> None:
     with open(args.config, "r") as f:
         config = json.load(f)
 
+    # Default all model/dataset cache under repo-local .hf_cache unless explicitly overridden.
+    repo_root = Path.cwd()
+    datasets_cache = Path(config.get("hf_cache_dir", str(repo_root / ".hf_cache" / "datasets"))).resolve()
+    hf_home = datasets_cache.parent
+    transformers_cache = hf_home / "hub"
+    datasets_cache.mkdir(parents=True, exist_ok=True)
+    transformers_cache.mkdir(parents=True, exist_ok=True)
+    os.environ["HF_HOME"] = str(hf_home)
+    os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
+    os.environ["TRANSFORMERS_CACHE"] = str(transformers_cache)
+
     profile = args.dataset_profile or config.get("dataset_profile", "balanced")
     models = config.get("llm_downloads", ["roberta-large", "distilroberta-base"])
-
-    if config.get("hf_cache_dir") and "HF_DATASETS_CACHE" not in os.environ:
-        os.environ["HF_DATASETS_CACHE"] = str(config["hf_cache_dir"])
 
     sources, train_rows, val_rows = resolve_dataset_plan(
         profile=profile,

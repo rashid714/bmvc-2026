@@ -19,6 +19,7 @@
   "pin_memory": true,
   "use_calibration": true,
   "use_multimodal": true,
+  "hf_cache_dir": ".hf_cache/datasets",
   "cloud_sources": ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco"],
   "emotion_weight": 1.0,
   "intention_weight": 1.2,
