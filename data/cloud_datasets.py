@@ -52,7 +52,8 @@ class MultimodalSample:
 class MINEDatasetLoader:
     """Load MINE dataset (Multimodal Intention and Emotion): Real-world internet data."""
 
-    MINE_HF_ID = "HKUST-GZ/MINE"  # HuggingFace dataset ID
+    # Keep candidate IDs so we can tolerate renamed/private repos.
+    MINE_HF_IDS = ["HKUST-GZ/MINE", "hkust-gz/mine"]
     
     @staticmethod
     def load_mine_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
@@ -62,7 +63,17 @@ class MINEDatasetLoader:
         """
         try:
             logger.info(f"Loading MINE dataset ({split} split)...")
-            dataset = load_dataset(MINEDatasetLoader.MINE_HF_ID, split=split, trust_remote_code=True)
+            dataset = None
+            last_error = None
+            for ds_id in MINEDatasetLoader.MINE_HF_IDS:
+                try:
+                    dataset = load_dataset(ds_id, split=split, trust_remote_code=True)
+                    logger.info(f"Using MINE dataset id: {ds_id}")
+                    break
+                except Exception as e:
+                    last_error = e
+            if dataset is None:
+                raise RuntimeError(last_error)
             
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
@@ -101,14 +112,24 @@ class MINEDatasetLoader:
 class EmoticonDatasetLoader:
     """Emoticon dataset: Large-scale multimodal emotion dataset."""
 
-    EMOTICON_HF_ID = "zoheb/emoticon"
+    EMOTICON_HF_IDS = ["zoheb/emoticon", "zoheb/Emoticon"]
     
     @staticmethod
     def load_emoticon_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         """Load Emoticon dataset with multimodal features."""
         try:
             logger.info(f"Loading Emoticon dataset ({split} split)...")
-            dataset = load_dataset(EmoticonDatasetLoader.EMOTICON_HF_ID, split=split)
+            dataset = None
+            last_error = None
+            for ds_id in EmoticonDatasetLoader.EMOTICON_HF_IDS:
+                try:
+                    dataset = load_dataset(ds_id, split=split)
+                    logger.info(f"Using Emoticon dataset id: {ds_id}")
+                    break
+                except Exception as e:
+                    last_error = e
+            if dataset is None:
+                raise RuntimeError(last_error)
             
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
@@ -143,14 +164,28 @@ class EmoticonDatasetLoader:
 class RazaIntentDatasetLoader:
     """RAZA Intent dataset: Large-scale intent classification."""
 
-    RAZA_HF_ID = "razauldin/intent_classification"
+    RAZA_HF_IDS = [
+        "razauldin/intent_classification",
+        "razauldin/intent classification",
+    ]
     
     @staticmethod
     def load_intent_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         """Load RAZA intent dataset (text-only, used for intention supervision)."""
         try:
             logger.info(f"Loading RAZA Intent dataset ({split} split)...")
-            dataset = load_dataset(RazaIntentDatasetLoader.RAZA_HF_ID, split=split)
+            dataset = None
+            last_error = None
+            for ds_id in RazaIntentDatasetLoader.RAZA_HF_IDS:
+                try:
+                    normalized_id = ds_id.replace(" ", "_")
+                    dataset = load_dataset(normalized_id, split=split)
+                    logger.info(f"Using RAZA dataset id: {normalized_id}")
+                    break
+                except Exception as e:
+                    last_error = e
+            if dataset is None:
+                raise RuntimeError(last_error)
             
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
@@ -193,14 +228,25 @@ class RazaIntentDatasetLoader:
 class MSCOCOCaptionsLoader:
     """MS COCO Captions: Large-scale image + caption dataset for alignment."""
     
-    COCO_HF_ID = "nlphuji/coco_captions"
+    COCO_HF_IDS = ["nlphuji/coco_captions", "nlphuji/coco captions"]
     
     @staticmethod
     def load_coco_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         """Load COCO Captions (aligned image-text pairs)."""
         try:
             logger.info(f"Loading MS COCO Captions ({split} split)...")
-            dataset = load_dataset(MSCOCOCaptionsLoader.COCO_HF_ID, split=split)
+            dataset = None
+            last_error = None
+            for ds_id in MSCOCOCaptionsLoader.COCO_HF_IDS:
+                try:
+                    normalized_id = ds_id.replace(" ", "_")
+                    dataset = load_dataset(normalized_id, split=split)
+                    logger.info(f"Using COCO captions dataset id: {normalized_id}")
+                    break
+                except Exception as e:
+                    last_error = e
+            if dataset is None:
+                raise RuntimeError(last_error)
             
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
@@ -234,14 +280,24 @@ class MSCOCOCaptionsLoader:
 class VoxCelebDatasetLoader:
     """VoxCeleb: Large-scale speaker recognition dataset with audio/video."""
     
-    VOXCELEB_HF_ID = "facebook/voxceleb"
+    VOXCELEB_HF_IDS = ["facebook/voxceleb", "voxceleb"]
     
     @staticmethod
     def load_voxceleb_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         """Load VoxCeleb (audio + video person identification)."""
         try:
             logger.info(f"Loading VoxCeleb ({split} split)...")
-            dataset = load_dataset(VoxCelebDatasetLoader.VOXCELEB_HF_ID, split=split)
+            dataset = None
+            last_error = None
+            for ds_id in VoxCelebDatasetLoader.VOXCELEB_HF_IDS:
+                try:
+                    dataset = load_dataset(ds_id, split=split)
+                    logger.info(f"Using VoxCeleb dataset id: {ds_id}")
+                    break
+                except Exception as e:
+                    last_error = e
+            if dataset is None:
+                raise RuntimeError(last_error)
             
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
@@ -294,7 +350,7 @@ class UnifiedCloudDatasetBuilder:
             Combined list of MultimodalSample objects
         """
         if sources is None:
-            sources = ["mine", "emoticon", "raza"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
         
         if splits is None:
             splits = {"train": 2000, "validation": 500}
@@ -334,12 +390,159 @@ class UnifiedCloudDatasetBuilder:
                 for split, limit in splits.items():
                     samples = VoxCelebDatasetLoader.load_voxceleb_split(split=split, limit=limit)
                     all_samples.extend(samples)
+
+            elif source.lower() == "goemotions":
+                for split, limit in splits.items():
+                    samples = GoEmotionsDatasetLoader.load_split(split=split, limit=limit)
+                    all_samples.extend(samples)
+
+            elif source.lower() == "dailydialog":
+                for split, limit in splits.items():
+                    samples = DailyDialogDatasetLoader.load_split(split=split, limit=limit)
+                    all_samples.extend(samples)
+
+            elif source.lower() == "tweet_eval":
+                for split, limit in splits.items():
+                    samples = TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
+                    all_samples.extend(samples)
         
         logger.info(f"\n{'='*60}")
         logger.info(f"TOTAL: {len(all_samples)} multimodal samples loaded")
         logger.info(f"{'='*60}\n")
         
         return all_samples
+
+
+class GoEmotionsDatasetLoader:
+    """Public and reliable text emotion dataset."""
+
+    HF_ID = "go_emotions"
+
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            logger.info(f"Loading GoEmotions ({split} split)...")
+            dataset = load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split=split)
+            if limit:
+                dataset = dataset.select(range(min(limit, len(dataset))))
+
+            samples = []
+            for item in dataset:
+                labels = item.get("labels", []) or []
+                primary = int(labels[0]) if labels else 0
+                intention = [int(x) % 20 for x in labels[:3]] or [primary % 20]
+                action = [((int(x) * 3) + 1) % 15 for x in labels[:2]] or [primary % 15]
+
+                samples.append(
+                    MultimodalSample(
+                        text=item.get("text", ""),
+                        emotion_label=primary % 11,
+                        intention_labels=intention,
+                        action_labels=action,
+                        source_dataset="GoEmotions",
+                        modality_available={"text": True, "image": False, "audio": False, "video": False},
+                    )
+                )
+            logger.info(f"Loaded {len(samples)} GoEmotions samples from {split} split")
+            return samples
+        except Exception as e:
+            logger.error(f"Failed to load GoEmotions dataset: {e}")
+            return []
+
+
+class DailyDialogDatasetLoader:
+    """Public dialogue dataset with emotion/act signals."""
+
+    HF_ID = "daily_dialog"
+
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            logger.info(f"Loading DailyDialog ({split} split)...")
+            dataset = load_dataset(DailyDialogDatasetLoader.HF_ID, split=split)
+
+            samples = []
+            for item in dataset:
+                dialog = item.get("dialog", [])
+                acts = item.get("act", [])
+                emotions = item.get("emotion", [])
+                for utt, act, emo in zip(dialog, acts, emotions):
+                    samples.append(
+                        MultimodalSample(
+                            text=utt,
+                            emotion_label=int(emo) % 11,
+                            intention_labels=[int(act) % 20],
+                            action_labels=[(int(act) + int(emo)) % 15],
+                            source_dataset="DailyDialog",
+                            modality_available={"text": True, "image": False, "audio": False, "video": False},
+                        )
+                    )
+                    if limit and len(samples) >= limit:
+                        break
+                if limit and len(samples) >= limit:
+                    break
+
+            logger.info(f"Loaded {len(samples)} DailyDialog samples from {split} split")
+            return samples
+        except Exception as e:
+            logger.warning(f"DailyDialog unavailable ({e}). Falling back to AG News for this source.")
+            try:
+                dataset = load_dataset("ag_news", split=split)
+                if limit:
+                    dataset = dataset.select(range(min(limit, len(dataset))))
+
+                samples = []
+                for item in dataset:
+                    label = int(item.get("label", 0))
+                    samples.append(
+                        MultimodalSample(
+                            text=item.get("text", ""),
+                            emotion_label=label % 11,
+                            intention_labels=[(label * 5 + 1) % 20],
+                            action_labels=[(label * 7 + 3) % 15],
+                            source_dataset="AGNewsFallback",
+                            modality_available={"text": True, "image": False, "audio": False, "video": False},
+                        )
+                    )
+                logger.info(f"Loaded {len(samples)} AG News fallback samples from {split} split")
+                return samples
+            except Exception as inner_e:
+                logger.error(f"AG News fallback also failed: {inner_e}")
+                return []
+
+
+class TweetEvalEmotionDatasetLoader:
+    """Public tweet emotion dataset."""
+
+    HF_ID = "tweet_eval"
+    SUBSET = "emotion"
+
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            logger.info(f"Loading TweetEval emotion ({split} split)...")
+            dataset = load_dataset(TweetEvalEmotionDatasetLoader.HF_ID, TweetEvalEmotionDatasetLoader.SUBSET, split=split)
+            if limit:
+                dataset = dataset.select(range(min(limit, len(dataset))))
+
+            samples = []
+            for item in dataset:
+                label = int(item.get("label", 0))
+                samples.append(
+                    MultimodalSample(
+                        text=item.get("text", ""),
+                        emotion_label=label % 11,
+                        intention_labels=[(label * 2) % 20],
+                        action_labels=[(label * 3) % 15],
+                        source_dataset="TweetEvalEmotion",
+                        modality_available={"text": True, "image": False, "audio": False, "video": False},
+                    )
+                )
+            logger.info(f"Loaded {len(samples)} TweetEval emotion samples from {split} split")
+            return samples
+        except Exception as e:
+            logger.error(f"Failed to load TweetEval emotion dataset: {e}")
+            return []
 
 
 class CloudMultimodalDataset(Dataset):
@@ -452,11 +655,11 @@ def get_cloud_dataloaders(
     
     if sources is None:
         if dataset_profile == "ultra_30gb":
-            sources = ["mine", "emoticon", "raza", "coco", "voxceleb"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco", "voxceleb"]
         elif dataset_profile == "large_20gb":
-            sources = ["mine", "emoticon", "raza", "coco"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco"]
         else:
-            sources = ["mine", "emoticon", "raza"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
     
     if max_samples is None:
         if max_rows_per_source is not None:

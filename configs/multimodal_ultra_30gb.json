@@ -20,7 +20,7 @@
   "use_multimodal": true,
   "dataset_profile": "ultra_30gb",
   "hf_cache_dir": ".hf_cache/datasets",
-  "cloud_sources": ["mine", "emoticon", "raza", "coco", "voxceleb"],
+  "cloud_sources": ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco", "voxceleb"],
   "llm_downloads": ["roberta-large", "distilroberta-base"],
   "emotion_weight": 1.0,
   "intention_weight": 1.2,
