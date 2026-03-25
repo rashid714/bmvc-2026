@@ -123,6 +123,181 @@ class MINEDatasetLoader:
             return GoEmotionsDatasetLoader.load_split(split=split, limit=limit)
 
 
+class MINEGoogleDriveDatasetLoader:
+    """Load MINE data from a pre-downloaded Google Drive folder (no automatic download)."""
+
+    DRIVE_FILE_ID = "1tdmHOwanxZLigt7_0c3M3kKYZ2rjSauQ"
+    DRIVE_URL = f"https://drive.google.com/file/d/{DRIVE_FILE_ID}/view"
+
+    @staticmethod
+    def _resolve_optional_path(root: Path, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return None
+        try:
+            p = Path(str(value))
+            if not p.is_absolute():
+                p = root / p
+            return str(p.resolve())
+        except Exception:
+            return str(value)
+
+    @staticmethod
+    def _to_int_list(value, default: int = 0) -> list[int]:
+        if value is None:
+            return [default]
+        if isinstance(value, list):
+            out = []
+            for v in value:
+                try:
+                    out.append(int(v))
+                except Exception:
+                    continue
+            return out or [default]
+        try:
+            return [int(value)]
+        except Exception:
+            return [default]
+
+    @staticmethod
+    def _metadata_records(root: Path) -> list[dict]:
+        # Common metadata filenames used in multimodal corpora.
+        candidates = [
+            "manifest.jsonl",
+            "manifest.json",
+            "metadata.jsonl",
+            "metadata.json",
+            "annotations.jsonl",
+            "annotations.json",
+            "data.jsonl",
+            "data.json",
+        ]
+        for rel in candidates:
+            meta_path = root / rel
+            if not meta_path.exists() or not meta_path.is_file():
+                continue
+            try:
+                if meta_path.suffix == ".jsonl":
+                    rows = []
+                    for line in meta_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                        if not line.strip():
+                            continue
+                        try:
+                            item = json.loads(line)
+                            if isinstance(item, dict):
+                                rows.append(item)
+                        except Exception:
+                            continue
+                    if rows:
+                        logger.info(f"Loaded MINE GDrive metadata from {meta_path}")
+                        return rows
+                else:
+                    obj = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
+                    if isinstance(obj, list):
+                        rows = [x for x in obj if isinstance(x, dict)]
+                        if rows:
+                            logger.info(f"Loaded MINE GDrive metadata from {meta_path}")
+                            return rows
+                    if isinstance(obj, dict):
+                        for key in ("samples", "data", "items", "records"):
+                            if isinstance(obj.get(key), list):
+                                rows = [x for x in obj[key] if isinstance(x, dict)]
+                                if rows:
+                                    logger.info(f"Loaded MINE GDrive metadata from {meta_path}:{key}")
+                                    return rows
+            except Exception as e:
+                logger.warning(f"Failed reading metadata file {meta_path}: {e}")
+        return []
+
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        root_env = os.environ.get("MINE_GDRIVE_ROOT", "").strip()
+        if not root_env:
+            logger.warning(
+                "MINE_GDRIVE_ROOT not set. Skipping mine_gdrive source. "
+                f"Dataset link: {MINEGoogleDriveDatasetLoader.DRIVE_URL}"
+            )
+            return []
+
+        root = Path(root_env).expanduser().resolve()
+        if not root.exists() or not root.is_dir():
+            logger.warning(f"MINE_GDRIVE_ROOT path does not exist: {root}")
+            return []
+
+        records = MINEGoogleDriveDatasetLoader._metadata_records(root)
+        if not records:
+            logger.warning(
+                f"No metadata file found under {root}. "
+                "Provide manifest.jsonl/metadata.json to enable mine_gdrive ingestion."
+            )
+            return []
+
+        samples = []
+        for idx, item in enumerate(records):
+            try:
+                split_value = str(item.get("split", "")).lower().strip()
+                if split_value and split_value != split.lower():
+                    continue
+
+                text = (
+                    item.get("text")
+                    or item.get("caption")
+                    or item.get("transcript")
+                    or item.get("description")
+                    or item.get("utterance")
+                    or ""
+                )
+
+                image_path = MINEGoogleDriveDatasetLoader._resolve_optional_path(
+                    root, item.get("image_path") or item.get("image") or item.get("photo_path")
+                )
+                audio_path = MINEGoogleDriveDatasetLoader._resolve_optional_path(
+                    root, item.get("audio_path") or item.get("audio")
+                )
+                video_path = MINEGoogleDriveDatasetLoader._resolve_optional_path(
+                    root, item.get("video_path") or item.get("video") or item.get("clip_path")
+                )
+
+                emotion_raw = item.get("emotion_label", item.get("emotion", 0))
+                try:
+                    emotion_label = int(emotion_raw)
+                except Exception:
+                    emotion_label = 0
+
+                intention_labels = MINEGoogleDriveDatasetLoader._to_int_list(
+                    item.get("intention_labels", item.get("intention", 0)), default=0
+                )
+                action_labels = MINEGoogleDriveDatasetLoader._to_int_list(
+                    item.get("action_labels", item.get("action", 0)), default=0
+                )
+
+                samples.append(
+                    MultimodalSample(
+                        text=str(text),
+                        image_path=image_path,
+                        audio_path=audio_path,
+                        video_path=video_path,
+                        emotion_label=emotion_label,
+                        intention_labels=intention_labels,
+                        action_labels=action_labels,
+                        source_dataset="MINE_GDrive",
+                        modality_available={
+                            "text": bool(text),
+                            "image": bool(image_path),
+                            "audio": bool(audio_path),
+                            "video": bool(video_path),
+                        },
+                    )
+                )
+
+                if limit and len(samples) >= limit:
+                    break
+            except Exception as e:
+                logger.warning(f"Skipped mine_gdrive sample {idx}: {e}")
+
+        logger.info(f"Loaded {len(samples)} MINE GDrive samples from split={split}")
+        return samples
+
+
 class EmoticonDatasetLoader:
     """Emoticon dataset: Large-scale multimodal emotion dataset."""
 
@@ -173,6 +348,72 @@ class EmoticonDatasetLoader:
         except Exception as e:
             logger.warning(f"Emoticon unavailable ({e}). Falling back to TweetEval emotion for this source.")
             return TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
+
+
+class Banking77IntentFallbackLoader:
+    """Public intent fallback for unavailable intent datasets."""
+
+    HF_ID = "banking77"
+
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            effective_split = split if split in {"train", "test"} else "train"
+            dataset = _hf_load_dataset(Banking77IntentFallbackLoader.HF_ID, split=effective_split)
+            if limit:
+                dataset = dataset.select(range(min(limit, len(dataset))))
+
+            samples = []
+            for item in dataset:
+                label = int(item.get("label", 0))
+                samples.append(
+                    MultimodalSample(
+                        text=item.get("text", ""),
+                        intention_labels=[label % 20],
+                        action_labels=[(label * 2 + 1) % 15],
+                        source_dataset="Banking77Fallback",
+                        modality_available={"text": True, "image": False, "audio": False, "video": False},
+                    )
+                )
+            logger.info(f"Loaded {len(samples)} Banking77 fallback samples from {effective_split} split")
+            return samples
+        except Exception as e:
+            logger.error(f"Banking77 fallback failed: {e}")
+            return []
+
+
+class CIFAR10ImageFallbackLoader:
+    """Public image fallback for unavailable image-caption datasets."""
+
+    HF_ID = "cifar10"
+
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            effective_split = split if split in {"train", "test"} else "train"
+            dataset = _hf_load_dataset(CIFAR10ImageFallbackLoader.HF_ID, split=effective_split)
+            if limit:
+                dataset = dataset.select(range(min(limit, len(dataset))))
+
+            samples = []
+            for idx, item in enumerate(dataset):
+                label = int(item.get("label", 0))
+                samples.append(
+                    MultimodalSample(
+                        text=f"CIFAR10 image class {label}",
+                        image_path=f"cifar10:{effective_split}:{idx}",
+                        emotion_label=label % 11,
+                        intention_labels=[(label * 3) % 20],
+                        action_labels=[(label * 5) % 15],
+                        source_dataset="CIFAR10ImageFallback",
+                        modality_available={"text": True, "image": True, "audio": False, "video": False},
+                    )
+                )
+            logger.info(f"Loaded {len(samples)} CIFAR10 image fallback samples from {effective_split} split")
+            return samples
+        except Exception as e:
+            logger.error(f"CIFAR10 image fallback failed: {e}")
+            return []
 
 
 class RazaIntentDatasetLoader:
@@ -235,8 +476,8 @@ class RazaIntentDatasetLoader:
             logger.info(f"Loaded {len(samples)} RAZA Intent samples from {split} split")
             return samples
         except Exception as e:
-            logger.error(f"Failed to load RAZA Intent dataset: {e}")
-            return []
+            logger.warning(f"RAZA unavailable ({e}). Falling back to Banking77 intent data.")
+            return Banking77IntentFallbackLoader.load_split(split=split, limit=limit)
 
 
 class MSCOCOCaptionsLoader:
@@ -287,8 +528,8 @@ class MSCOCOCaptionsLoader:
             logger.info(f"Loaded {len(samples)} COCO Captions samples from {split} split")
             return samples
         except Exception as e:
-            logger.error(f"Failed to load COCO Captions dataset: {e}")
-            return []
+            logger.warning(f"COCO unavailable ({e}). Falling back to CIFAR10 image data.")
+            return CIFAR10ImageFallbackLoader.load_split(split=split, limit=limit)
 
 
 class VoxCelebDatasetLoader:
@@ -299,6 +540,12 @@ class VoxCelebDatasetLoader:
     @staticmethod
     def load_voxceleb_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         """Load VoxCeleb (audio + video person identification)."""
+        if os.environ.get("ALLOW_LARGE_VOX_DOWNLOAD", "0") != "1":
+            logger.warning(
+                "Skipping VoxCeleb by default to avoid huge downloads. "
+                "Set ALLOW_LARGE_VOX_DOWNLOAD=1 to enable."
+            )
+            return []
         try:
             logger.info(f"Loading VoxCeleb ({split} split)...")
             dataset = None
@@ -351,12 +598,13 @@ class UnifiedCloudDatasetBuilder:
         sources: list[str] = None,
         splits: dict[str, int] = None,
         cache_dir: Optional[str] = None,
+        report_path: Optional[str] = None,
     ) -> list[MultimodalSample]:
         """
         Build unified dataset from multiple cloud sources.
         
         Args:
-            sources: List of dataset names ["mine", "emoticon", "raza", "coco", "voxceleb"]
+            sources: List of dataset names ["mine", "mine_gdrive", "emoticon", "raza", "coco", "voxceleb"]
             splits: Dict mapping dataset -> max_samples per split (e.g., {"train": 5000})
             cache_dir: Optional local cache for HuggingFace downloads
         
@@ -380,15 +628,22 @@ class UnifiedCloudDatasetBuilder:
         os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
         
         all_samples = []
+        source_report: dict[str, dict[str, int | list[str]]] = {}
         
         for source in sources:
             logger.info(f"\n{'='*60}")
             logger.info(f"Loading {source.upper()} dataset")
             logger.info(f"{'='*60}")
             
+            before_count = len(all_samples)
             if source.lower() == "mine":
                 for split, limit in splits.items():
                     samples = MINEDatasetLoader.load_mine_split(split=split, limit=limit)
+                    all_samples.extend(samples)
+
+            elif source.lower() in {"mine_gdrive", "mine_drive", "mine_google_drive"}:
+                for split, limit in splits.items():
+                    samples = MINEGoogleDriveDatasetLoader.load_split(split=split, limit=limit)
                     all_samples.extend(samples)
             
             elif source.lower() == "emoticon":
@@ -425,6 +680,18 @@ class UnifiedCloudDatasetBuilder:
                 for split, limit in splits.items():
                     samples = TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
                     all_samples.extend(samples)
+
+            loaded_now = all_samples[before_count:]
+            source_report[source] = {
+                "requested": int(sum(splits.values())),
+                "loaded": int(len(loaded_now)),
+                "used_datasets": sorted(list({s.source_dataset for s in loaded_now})),
+            }
+
+        # Persist a source-availability report for reproducibility/debugging.
+        report_target = Path(report_path) if report_path else (Path.cwd() / "data" / "source_availability_report.json")
+        report_target.parent.mkdir(parents=True, exist_ok=True)
+        report_target.write_text(json.dumps({"sources": source_report}, indent=2), encoding="utf-8")
         
         logger.info(f"\n{'='*60}")
         logger.info(f"TOTAL: {len(all_samples)} multimodal samples loaded")
@@ -661,6 +928,7 @@ def get_cloud_dataloaders(
     distributed: bool = False,
     dataset_profile: str = "balanced",
     cache_dir: Optional[str] = None,
+    mine_gdrive_root: Optional[str] = None,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Create dataloaders for cloud training from multiple sources.
@@ -688,14 +956,16 @@ def get_cloud_dataloaders(
     os.environ["TRANSFORMERS_CACHE"] = str(model_cache)
     os.environ["HF_HUB_CACHE"] = str(model_hub_cache)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
+    if mine_gdrive_root:
+        os.environ["MINE_GDRIVE_ROOT"] = str(Path(mine_gdrive_root).expanduser().resolve())
 
     tokenizer = AutoTokenizer.from_pretrained("roberta-large", cache_dir=os.environ.get("TRANSFORMERS_CACHE", _repo_model_cache_dir()))
     
     if sources is None:
         if dataset_profile == "ultra_30gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco", "voxceleb"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco", "voxceleb"]
         elif dataset_profile == "large_20gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco"]
         else:
             sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
     
@@ -736,6 +1006,7 @@ def get_cloud_dataloaders(
         sources=sources,
         splits={"train": max_samples.get("train", 5000), "validation": max_samples.get("validation", 1000)},
         cache_dir=cache_dir,
+        report_path=str((Path.cwd() / "data" / "source_availability_report.json").resolve()),
     )
     
     # Fallback to synthetic data if no cloud data loaded

@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.cloud_datasets import (
     MINEDatasetLoader,
+    MINEGoogleDriveDatasetLoader,
     EmoticonDatasetLoader,
     RazaIntentDatasetLoader,
     MSCOCOCaptionsLoader,
@@ -43,9 +44,9 @@ def setup_logging() -> None:
 def resolve_dataset_plan(profile: str, max_rows_per_source: int | None, sources: list[str] | None) -> tuple[list[str], int, int]:
     if sources is None:
         if profile == "ultra_30gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco", "voxceleb"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco", "voxceleb"]
         elif profile == "large_20gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza", "coco"]
+            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco"]
         else:
             sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
 
@@ -89,6 +90,7 @@ def warm_datasets(sources: list[str], train_rows: int, val_rows: int) -> None:
         "dailydialog": DailyDialogDatasetLoader.load_split,
         "tweet_eval": TweetEvalEmotionDatasetLoader.load_split,
         "mine": MINEDatasetLoader.load_mine_split,
+        "mine_gdrive": MINEGoogleDriveDatasetLoader.load_split,
         "emoticon": EmoticonDatasetLoader.load_emoticon_split,
         "raza": RazaIntentDatasetLoader.load_intent_split,
         "coco": MSCOCOCaptionsLoader.load_coco_split,
@@ -146,6 +148,9 @@ def main() -> None:
     os.environ["TRANSFORMERS_CACHE"] = str(transformers_cache)
     os.environ["HF_HUB_CACHE"] = str(hub_cache)
     os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache)
+    mine_gdrive_root = config.get("mine_gdrive_root")
+    if mine_gdrive_root:
+        os.environ["MINE_GDRIVE_ROOT"] = str(Path(mine_gdrive_root).expanduser().resolve())
 
     profile = args.dataset_profile or config.get("dataset_profile", "balanced")
     models = config.get("llm_downloads", ["roberta-large", "distilroberta-base"])

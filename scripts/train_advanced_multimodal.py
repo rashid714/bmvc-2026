@@ -252,7 +252,8 @@ def run_seed(seed, config, output_dir, rank, world_size, device, logger):
         distributed=(world_size > 1),
         sources=config.get("cloud_sources", ["mine", "emoticon", "raza"]),
         dataset_profile=config.get("dataset_profile", "balanced"),
-        cache_dir=config.get("hf_cache_dir")
+        cache_dir=config.get("hf_cache_dir"),
+        mine_gdrive_root=config.get("mine_gdrive_root"),
     )
     
     # Create model (USING ADVANCED MODEL!)
