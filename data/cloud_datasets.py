@@ -356,9 +356,15 @@ class UnifiedCloudDatasetBuilder:
         if splits is None:
             splits = {"train": 2000, "validation": 500}
         
-        if cache_dir:
-            import os
-            os.environ["HF_DATASETS_CACHE"] = cache_dir
+        # Force datasets under repo data/ and model hub assets under repo models/.
+        repo_root = Path.cwd()
+        datasets_cache = Path(cache_dir).resolve() if cache_dir else (repo_root / "data" / "hf_datasets").resolve()
+        model_hub_cache = (repo_root / "models" / "hf_hub").resolve()
+        datasets_cache.mkdir(parents=True, exist_ok=True)
+        model_hub_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
+        os.environ["HF_HUB_CACHE"] = str(model_hub_cache)
+        os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
         
         all_samples = []
         
@@ -656,20 +662,19 @@ def get_cloud_dataloaders(
     """
     from transformers import AutoTokenizer
 
-    # Keep all HF downloads inside this repository by default.
-    if cache_dir is None:
-        cache_dir = str((Path.cwd() / ".hf_cache" / "datasets").resolve())
-    cache_path = Path(cache_dir).resolve()
-    hf_home = cache_path.parent
-    hf_hub = hf_home / "hub"
-    hf_xet = hf_home / "xet"
-    hf_home.mkdir(parents=True, exist_ok=True)
-    cache_path.mkdir(parents=True, exist_ok=True)
-    hf_hub.mkdir(parents=True, exist_ok=True)
-    hf_xet.mkdir(parents=True, exist_ok=True)
+    # Force all downloaded artifacts to live in repo folders.
+    repo_root = Path.cwd()
+    datasets_cache = Path(cache_dir).resolve() if cache_dir else (repo_root / "data" / "hf_datasets").resolve()
+    model_cache = (repo_root / "models" / "hf_models").resolve()
+    model_hub_cache = (repo_root / "models" / "hf_hub").resolve()
+    hf_home = (repo_root / ".hf_home").resolve()
+    for p in (datasets_cache, model_cache, model_hub_cache, hf_home):
+        p.mkdir(parents=True, exist_ok=True)
     os.environ["HF_HOME"] = str(hf_home)
-    os.environ["HF_DATASETS_CACHE"] = str(cache_path)
-    os.environ["TRANSFORMERS_CACHE"] = str(hf_hub)
+    os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
+    os.environ["TRANSFORMERS_CACHE"] = str(model_cache)
+    os.environ["HF_HUB_CACHE"] = str(model_hub_cache)
+    os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
 
     tokenizer = AutoTokenizer.from_pretrained("roberta-large")
     
@@ -707,6 +712,7 @@ def get_cloud_dataloaders(
     logger.info("HF_HOME=%s", os.environ.get("HF_HOME"))
     logger.info("HF_DATASETS_CACHE=%s", os.environ.get("HF_DATASETS_CACHE"))
     logger.info("TRANSFORMERS_CACHE=%s", os.environ.get("TRANSFORMERS_CACHE"))
+    logger.info("HF_HUB_CACHE=%s", os.environ.get("HF_HUB_CACHE"))
     if dataset_profile in {"large_20gb", "ultra_30gb"}:
         logger.info(
             "Large dataset mode enabled. Expected first-run cache: ~20-30GB depending on source availability."
