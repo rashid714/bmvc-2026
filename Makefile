@@ -36,7 +36,7 @@ help:
 	@echo "  make aws-setup               - Auto-setup AWS environment"
 	@echo "  make aws-verify              - Verify GPUs and PyTorch"
 	@echo "  make aws-smoke               - Quick test on AWS (1 min)"
-	@echo "  make aws-train               - Full training on AWS (12+ hours)"
+	@echo "  make aws-train               - Full training on AWS (12-24 hours on T4)"
 	@echo "  make aws-download-results    - Download results locally"
 	@echo "  make aws-status              - Check AWS environment"
 	@echo ""
@@ -58,10 +58,9 @@ help:
 	@echo ""
 
 install:
-	pip install --upgrade pip
 	pip install -r requirements.txt
 	pip install -r requirements-inference.txt
-	@echo "Dependencies installed for standard/T4 GPU architecture!"
+	@echo "Dependencies installed!"
 
 demo:
 	streamlit run app.py
@@ -219,7 +218,7 @@ predownload-ultra:
 	@du -sh .hf_cache || true
 
 professor-run:
-	@echo "Professor one-command run (strict + reproducible, 16GB VRAM limits)"
+	@echo "Professor one-command run (strict + reproducible)"
 	@mkdir -p data/hf_datasets models/hf_models models/hf_hub checkpoints/professor-run
 	@python -c "import torch,sys; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA devices:', torch.cuda.device_count()); sys.exit(0 if torch.cuda.is_available() else 1)" || (echo "ERROR: CUDA is not available. Install a CUDA-enabled PyTorch build and run again." && exit 1)
 	@CONFIG_PATH="configs/multimodal_cloud.json"; \
@@ -334,7 +333,7 @@ aws-help:
 	@echo "3️⃣  Run Smoke Test (1 min):"
 	@echo "   $$ make aws-smoke"
 	@echo ""
-	@echo "4️⃣  Run Full Training:"
+	@echo "4️⃣  Run Full Training (12-24 hours on T4):"
 	@echo "   $$ make aws-train"
 	@echo ""
 	@echo "5️⃣  Download Results:"
