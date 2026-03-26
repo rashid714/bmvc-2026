@@ -248,12 +248,14 @@ professor-run:
 			--config "$$CONFIG_PATH" \
 			--strict-preflight \
 			--batch-size 8 \
+			--epochs 10 \
 			--output-dir checkpoints/professor-run; \
 	else \
 		python scripts/train_multimodal_cloud.py \
 			--config "$$CONFIG_PATH" \
 			--strict-preflight \
 			--batch-size 8 \
+			--epochs 10 \
 			--output-dir checkpoints/professor-run; \
 	fi
 	@echo "Complete: checkpoints/professor-run"
