@@ -5,7 +5,7 @@ help:
 	@echo "========================================="
 	@echo ""
 	@echo "Available targets:"
-	@echo "  make install          - Install all dependencies"
+	@echo "  make install          - Install all dependencies (Blackwell Optimized)"
 	@echo "  make demo            - Run Streamlit demo app"
 	@echo "  make train           - Train world-class model"
 	@echo "  make real-data       - Download real public datasets"
@@ -20,7 +20,7 @@ help:
 	@echo "  make multimodal-single-gpu   - Single GPU training (debug mode)"
 	@echo "  make multimodal-multi-gpu    - Multi-GPU training (4 GPUs)"
 	@echo "  make multimodal-cloud        - Full production run with launcher"
-	@echo "  make multimodal-ablation-*   - Ablation studies"
+	@echo "  make multimodal-ablation-* - Ablation studies"
 	@echo ""
 	@echo "ADVANCED MULTIMODAL (Top-Tier - BMVC 2026 PRODUCTION 🚀):"
 	@echo "  make advanced-smoke        - Quick test (1 epoch, dual-layer LLM, auto-PDF)"
@@ -58,9 +58,10 @@ help:
 	@echo ""
 
 install:
+	pip install --upgrade pip
 	pip install -r requirements.txt
 	pip install -r requirements-inference.txt
-	@echo "Dependencies installed!"
+	@echo "Dependencies installed for Blackwell architecture!"
 
 demo:
 	streamlit run app.py
