@@ -397,5 +397,5 @@ all: install demo
 .PHONY: organize-paper
 organize-paper:
 	@echo "Organizing research paper data"
-	python scripts/organize_paper_data.py checkpoints/advanced-results-final research_paper_data
+	python scripts/organize_paper_data.py checkpoints/professor-run research_paper_data
 	@echo "Paper folder organized"
