@@ -119,7 +119,7 @@ class MINEDatasetLoader:
             logger.info(f"Loaded {len(samples)} MINE samples from {split} split")
             return samples
         except Exception as e:
-            logger.warning(f"MINE unavailable ({e}). Falling back to GoEmotions for this source.")
+            logger.warning(f"MINE unavailable ({e}). Falling back to guaranteed GoEmotions for this source.")
             return GoEmotionsDatasetLoader.load_split(split=split, limit=limit)
 
 
@@ -160,7 +160,6 @@ class MINEGoogleDriveDatasetLoader:
 
     @staticmethod
     def _metadata_records(root: Path) -> list[dict]:
-        # Common metadata filenames used in multimodal corpora.
         candidates = [
             "manifest.jsonl",
             "manifest.json",
@@ -301,11 +300,10 @@ class MINEGoogleDriveDatasetLoader:
 class EmoticonDatasetLoader:
     """Emoticon dataset: Large-scale multimodal emotion dataset."""
 
-    EMOTICON_HF_IDS = ["zoheb/emoticon", "zoheb/Emoticon"]
+    EMOTICON_HF_IDS = ["zoheb/emoticon", "zoheb/Emoticon", "emoticon"]
     
     @staticmethod
     def load_emoticon_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        """Load Emoticon dataset with multimodal features."""
         try:
             logger.info(f"Loading Emoticon dataset ({split} split)...")
             dataset = None
@@ -346,12 +344,12 @@ class EmoticonDatasetLoader:
             logger.info(f"Loaded {len(samples)} Emoticon samples from {split} split")
             return samples
         except Exception as e:
-            logger.warning(f"Emoticon unavailable ({e}). Falling back to TweetEval emotion for this source.")
+            logger.warning(f"Emoticon unavailable ({e}). Falling back to guaranteed TweetEval dataset.")
             return TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
 
 
 class Banking77IntentFallbackLoader:
-    """Public intent fallback for unavailable intent datasets."""
+    """Public intent fallback for guaranteed downloads."""
 
     HF_ID = "banking77"
 
@@ -383,7 +381,7 @@ class Banking77IntentFallbackLoader:
 
 
 class CIFAR10ImageFallbackLoader:
-    """Public image fallback for unavailable image-caption datasets."""
+    """Public image fallback for guaranteed downloads."""
 
     HF_ID = "cifar10"
 
@@ -426,7 +424,6 @@ class RazaIntentDatasetLoader:
     
     @staticmethod
     def load_intent_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        """Load RAZA intent dataset (text-only, used for intention supervision)."""
         try:
             logger.info(f"Loading RAZA Intent dataset ({split} split)...")
             dataset = None
@@ -445,7 +442,6 @@ class RazaIntentDatasetLoader:
             if limit:
                 dataset = dataset.select(range(min(limit, len(dataset))))
             
-            # Intent name to intention class mapping
             intent_to_intention = {
                 "inform": 0, "request": 1, "ask": 2, "suggest": 3, "clarify": 4,
                 "affirm": 5, "deny": 6, "greet": 7, "goodbye": 8,
@@ -476,18 +472,17 @@ class RazaIntentDatasetLoader:
             logger.info(f"Loaded {len(samples)} RAZA Intent samples from {split} split")
             return samples
         except Exception as e:
-            logger.warning(f"RAZA unavailable ({e}). Falling back to Banking77 intent data.")
+            logger.warning(f"RAZA unavailable ({e}). Falling back to guaranteed Banking77 intent data.")
             return Banking77IntentFallbackLoader.load_split(split=split, limit=limit)
 
 
 class MSCOCOCaptionsLoader:
     """MS COCO Captions: Large-scale image + caption dataset for alignment."""
     
-    COCO_HF_IDS = ["nlphuji/coco_captions", "nlphuji/coco captions"]
+    COCO_HF_IDS = ["nlphuji/coco_captions", "ydshieh/coco_dataset_script"]
     
     @staticmethod
     def load_coco_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        """Load COCO Captions (aligned image-text pairs)."""
         try:
             logger.info(f"Loading MS COCO Captions ({split} split)...")
             dataset = None
@@ -511,11 +506,11 @@ class MSCOCOCaptionsLoader:
                 try:
                     sample = MultimodalSample(
                         text=item.get("caption", ""),
-                        image_path=item.get("image_url"),  # or image_id for local lookup
+                        image_path=item.get("image_url") or item.get("image_id"),
                         source_dataset="COCO_Captions",
                         modality_available={
                             "text": bool(item.get("caption")),
-                            "image": bool(item.get("image_url")),
+                            "image": bool(item.get("image_url") or item.get("image_id")),
                             "audio": False,
                             "video": False,
                         }
@@ -528,7 +523,7 @@ class MSCOCOCaptionsLoader:
             logger.info(f"Loaded {len(samples)} COCO Captions samples from {split} split")
             return samples
         except Exception as e:
-            logger.warning(f"COCO unavailable ({e}). Falling back to CIFAR10 image data.")
+            logger.warning(f"COCO unavailable ({e}). Falling back to guaranteed CIFAR10 image data.")
             return CIFAR10ImageFallbackLoader.load_split(split=split, limit=limit)
 
 
@@ -539,12 +534,8 @@ class VoxCelebDatasetLoader:
     
     @staticmethod
     def load_voxceleb_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        """Load VoxCeleb (audio + video person identification)."""
         if os.environ.get("ALLOW_LARGE_VOX_DOWNLOAD", "0") != "1":
-            logger.warning(
-                "Skipping VoxCeleb by default to avoid huge downloads. "
-                "Set ALLOW_LARGE_VOX_DOWNLOAD=1 to enable."
-            )
+            logger.warning("Skipping VoxCeleb by default to avoid huge downloads. Set ALLOW_LARGE_VOX_DOWNLOAD=1 to enable.")
             return []
         try:
             logger.info(f"Loading VoxCeleb ({split} split)...")
@@ -572,7 +563,7 @@ class VoxCelebDatasetLoader:
                         video_path=item.get("video_path"),
                         source_dataset="VoxCeleb",
                         modality_available={
-                            "text": True,  # Generated speaker ID
+                            "text": True,
                             "image": False,
                             "audio": bool(item.get("audio_path")),
                             "video": bool(item.get("video_path")),
@@ -600,24 +591,12 @@ class UnifiedCloudDatasetBuilder:
         cache_dir: Optional[str] = None,
         report_path: Optional[str] = None,
     ) -> list[MultimodalSample]:
-        """
-        Build unified dataset from multiple cloud sources.
-        
-        Args:
-            sources: List of dataset names ["mine", "mine_gdrive", "emoticon", "raza", "coco", "voxceleb"]
-            splits: Dict mapping dataset -> max_samples per split (e.g., {"train": 5000})
-            cache_dir: Optional local cache for HuggingFace downloads
-        
-        Returns:
-            Combined list of MultimodalSample objects
-        """
         if sources is None:
             sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
         
         if splits is None:
             splits = {"train": 2000, "validation": 500}
         
-        # Force datasets under repo data/ and model hub assets under repo models/.
         repo_root = Path.cwd()
         datasets_cache = Path(cache_dir).resolve() if cache_dir else (repo_root / "data" / "hf_datasets").resolve()
         model_hub_cache = (repo_root / "models" / "hf_hub").resolve()
@@ -688,7 +667,6 @@ class UnifiedCloudDatasetBuilder:
                 "used_datasets": sorted(list({s.source_dataset for s in loaded_now})),
             }
 
-        # Persist a source-availability report for reproducibility/debugging.
         report_target = Path(report_path) if report_path else (Path.cwd() / "data" / "source_availability_report.json")
         report_target.parent.mkdir(parents=True, exist_ok=True)
         report_target.write_text(json.dumps({"sources": source_report}, indent=2), encoding="utf-8")
@@ -861,7 +839,6 @@ class CloudMultimodalDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
         
-        # Text tokenization
         text_encoding = self.tokenizer(
             sample.text,
             max_length=self.max_text_len,
@@ -873,14 +850,11 @@ class CloudMultimodalDataset(Dataset):
         batch = {
             "input_ids": text_encoding["input_ids"].squeeze(0),
             "attention_mask": text_encoding["attention_mask"].squeeze(0),
-            # Some sources supervise only intention/action. Keep emotion target valid for joint loss.
             "emotion_label": torch.tensor(max(0, int(sample.emotion_label)), dtype=torch.long),
             "source": sample.source_dataset,
         }
-        # Backward-compatible alias used by advanced training script.
         batch["emotion_labels"] = batch["emotion_label"]
         
-        # Intention labels (multi-label)
         if sample.intention_labels:
             intention_target = torch.zeros(20, dtype=torch.float32)
             for intent_idx in sample.intention_labels:
@@ -890,7 +864,6 @@ class CloudMultimodalDataset(Dataset):
         else:
             batch["intention_labels"] = torch.zeros(20, dtype=torch.float32)
         
-        # Action labels (multi-label)
         if sample.action_labels:
             action_target = torch.zeros(15, dtype=torch.float32)
             for action_idx in sample.action_labels:
@@ -900,11 +873,9 @@ class CloudMultimodalDataset(Dataset):
         else:
             batch["action_labels"] = torch.zeros(15, dtype=torch.float32)
         
-        # Multimodal features (placeholders for cloud execution)
-        # In actual cloud deployment, these would load from URLs or cloud storage
-        batch["image_features"] = torch.zeros(2048, dtype=torch.float32)  # Placeholder
-        batch["audio_features"] = torch.zeros(512, dtype=torch.float32)   # Placeholder
-        batch["video_features"] = torch.zeros(1024, dtype=torch.float32)  # Placeholder
+        batch["image_features"] = torch.zeros(2048, dtype=torch.float32)
+        batch["audio_features"] = torch.zeros(512, dtype=torch.float32)
+        batch["video_features"] = torch.zeros(1024, dtype=torch.float32)
         
         batch["modality_mask"] = torch.tensor(
             [
@@ -934,17 +905,9 @@ def get_cloud_dataloaders(
     """
     Create dataloaders for cloud training from multiple sources.
     Falls back to synthetic data if cloud sources unavailable (e.g., local testing).
-    
-   Usage:
-        train_dl, val_dl, test_dl = get_cloud_dataloaders(
-            batch_size=32,
-            sources=["mine", "emoticon", "raza"],
-            max_samples={"train": 10000, "validation": 2000}
-        )
     """
     from transformers import AutoTokenizer
 
-    # Force all downloaded artifacts to live in repo folders.
     repo_root = Path.cwd()
     datasets_cache = Path(cache_dir).resolve() if cache_dir else (repo_root / "data" / "hf_datasets").resolve()
     model_cache = (repo_root / "models" / "hf_models").resolve()
@@ -987,21 +950,6 @@ def get_cloud_dataloaders(
     if eval_batch_size is None:
         eval_batch_size = batch_size * 2
 
-    logger.info(
-        "Dataset profile=%s | sources=%s | target rows/source train=%s",
-        dataset_profile,
-        sources,
-        max_samples.get("train"),
-    )
-    logger.info("HF_HOME=%s", os.environ.get("HF_HOME"))
-    logger.info("HF_DATASETS_CACHE=%s", os.environ.get("HF_DATASETS_CACHE"))
-    logger.info("TRANSFORMERS_CACHE=%s", os.environ.get("TRANSFORMERS_CACHE"))
-    logger.info("HF_HUB_CACHE=%s", os.environ.get("HF_HUB_CACHE"))
-    if dataset_profile in {"large_20gb", "ultra_30gb"}:
-        logger.info(
-            "Large dataset mode enabled. Expected first-run cache: ~20-30GB depending on source availability."
-        )
-    
     logger.info("Building unified dataset from cloud sources...")
     all_samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
         sources=sources,
@@ -1010,12 +958,10 @@ def get_cloud_dataloaders(
         report_path=str((Path.cwd() / "data" / "source_availability_report.json").resolve()),
     )
     
-    # Fallback to synthetic data if no cloud data loaded
     if len(all_samples) == 0:
         logger.warning("No cloud data loaded. Generating synthetic data for testing...")
         all_samples = _generate_synthetic_samples(max_samples.get("train", 5000))
     
-    # Split into train/val/test (80/10/10)
     n_train = max(1, int(0.8 * len(all_samples)))
     n_val = max(1, int(0.1 * len(all_samples)))
     
@@ -1023,7 +969,6 @@ def get_cloud_dataloaders(
     val_samples = all_samples[n_train:n_train + n_val]
     test_samples = all_samples[n_train + n_val:]
     
-    # Ensure at least 1 sample per split
     if len(train_samples) == 0:
         train_samples = all_samples[:1]
     if len(val_samples) == 0:
@@ -1039,7 +984,7 @@ def get_cloud_dataloaders(
         train_dataset,
         batch_size=min(batch_size, len(train_samples)),
         shuffle=True,
-        num_workers=0,  # num_workers
+        num_workers=num_workers,
         pin_memory=True,
         drop_last=False,
     )
@@ -1048,7 +993,7 @@ def get_cloud_dataloaders(
         val_dataset,
         batch_size=min(eval_batch_size, len(val_samples)),
         shuffle=False,
-        num_workers=0,  # num_workers
+        num_workers=num_workers,
         pin_memory=True,
     )
     
@@ -1056,7 +1001,7 @@ def get_cloud_dataloaders(
         test_dataset,
         batch_size=min(eval_batch_size, len(test_samples)),
         shuffle=False,
-        num_workers=0,  # num_workers
+        num_workers=num_workers,
         pin_memory=True,
     )
     
@@ -1064,7 +1009,6 @@ def get_cloud_dataloaders(
 
 
 def _generate_synthetic_samples(num_samples: int = 100) -> list[MultimodalSample]:
-    """Generate synthetic samples for testing/debugging."""
     import random
     
     emotions = [
@@ -1116,17 +1060,12 @@ def _generate_synthetic_samples(num_samples: int = 100) -> list[MultimodalSample
     logger.info(f"Generated {num_samples} synthetic samples for testing")
     return samples
 
-
 if __name__ == "__main__":
-    # Test cloud dataset loading
     logging.basicConfig(level=logging.INFO)
-    
-    # Build dataset from cloud sources
     samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
         sources=["mine", "emoticon"],
         splits={"train": 100, "validation": 20},
     )
-    
     print(f"\nLoaded {len(samples)} samples")
     if samples:
         print(f"First sample: {samples[0]}")
