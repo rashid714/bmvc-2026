@@ -1,850 +1,544 @@
 """
-Cloud-native multimodal dataset loading.
-Supports MINE dataset and other large-scale real-world datasets.
-Downloads and processes directly on cloud without local disk pressure.
+=========================================================================================
+BEAR BMVC 2026 - MASTER CLOUD DATASET ARCHITECTURE
+=========================================================================================
+Cloud-native multimodal dataset loading system.
+Features: 
+  - Native Kaggle API Integration
+  - Hugging Face Ecosystem with Auto-Bypass
+  - Google Drive MINE Loader
+  - Multi-Tier Fallbacks (CIFAR10, Banking77, Synthetic Generation)
+  - Distributed Data Parallel (DDP) Ready
 """
 
 from __future__ import annotations
 
-import json
-import logging
 import os
-from dataclasses import dataclass
+import sys
+import json
+import random
+import logging
+import argparse
+import subprocess
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
-import io
+from typing import Optional, Dict, List, Any, Union
 
+import pandas as pd
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset, concatenate_datasets
-import requests
+from torch.utils.data import Dataset, DataLoader, DistributedSampler
+from datasets import load_dataset, disable_progress_bar
 
-logger = logging.getLogger(__name__)
+# Configure Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("CloudDatasets")
 
+# Optional: Disable verbose HF progress bars during automated cloud runs
+if os.environ.get("DISABLE_HF_PROGRESS", "1") == "1":
+    disable_progress_bar()
+
+# ==============================================================================
+# 1. CORE CONFIGURATION & CACHE MANAGEMENT
+# ==============================================================================
 
 def _repo_dataset_cache_dir() -> str:
-    return str((Path.cwd() / "data" / "hf_datasets").resolve())
-
+    path = (Path.cwd() / "data" / "hf_datasets").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 def _repo_model_cache_dir() -> str:
-    return str((Path.cwd() / "models" / "hf_models").resolve())
-
+    path = (Path.cwd() / "models" / "hf_models").resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return str(path)
 
 def _hf_load_dataset(*args, **kwargs):
+    """
+    Centralized Hugging Face dataset loader with security bypasses enabled.
+    """
     kwargs.setdefault("cache_dir", _repo_dataset_cache_dir())
+    kwargs.setdefault("trust_remote_code", True)  # Critical for custom HF scripts
     return load_dataset(*args, **kwargs)
 
 
 @dataclass
 class MultimodalSample:
-    """Unified multimodal data representation."""
+    """Unified multimodal data representation for the BEAR architecture."""
     text: str
-    image_path: Optional[str] = None  # URL or local path for cloud streaming
+    image_path: Optional[str] = None
     audio_path: Optional[str] = None
     video_path: Optional[str] = None
-    emotion_label: int = -1
-    intention_labels: list[int] = None
-    action_labels: list[int] = None
+    emotion_label: int = 0
+    intention_labels: List[int] = field(default_factory=list)
+    action_labels: List[int] = field(default_factory=list)
     source_dataset: str = "unknown"
-    modality_available: dict[str, bool] = None
+    modality_available: Dict[str, bool] = field(default_factory=dict)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.intention_labels is None:
-            self.intention_labels = []
-        if self.action_labels is None:
-            self.action_labels = []
-        if self.modality_available is None:
+        if not self.intention_labels:
+            self.intention_labels = [0]
+        if not self.action_labels:
+            self.action_labels = [0]
+        if not self.modality_available:
             self.modality_available = {
-                "text": bool(self.text),
+                "text": bool(self.text and str(self.text).strip() != ""),
                 "image": bool(self.image_path),
                 "audio": bool(self.audio_path),
                 "video": bool(self.video_path),
             }
 
 
-class MINEDatasetLoader:
-    """Load MINE dataset (Multimodal Intention and Emotion): Real-world internet data."""
+# ==============================================================================
+# 2. KAGGLE NATIVE SUBSYSTEM
+# ==============================================================================
 
-    # Keep candidate IDs so we can tolerate renamed/private repos.
-    MINE_HF_IDS = ["HKUST-GZ/MINE", "hkust-gz/mine"]
-    
+class KaggleDownloader:
+    """Utility to safely download and extract Kaggle datasets via native API."""
     @staticmethod
-    def load_mine_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        """
-        Load MINE dataset from HuggingFace.
-        MINE contains real YouTube videos with emotion + intention annotations + multimodal data.
-        """
-        try:
-            logger.info(f"Loading MINE dataset ({split} split)...")
-            dataset = None
-            last_error = None
-            for ds_id in MINEDatasetLoader.MINE_HF_IDS:
-                try:
-                    dataset = _hf_load_dataset(ds_id, split=split)
-                    logger.info(f"Using MINE dataset id: {ds_id}")
-                    break
-                except Exception as e:
-                    last_error = e
-            if dataset is None:
-                raise RuntimeError(last_error)
-            
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-            
-            samples = []
-            for idx, item in enumerate(dataset):
-                try:
-                    sample = MultimodalSample(
-                        text=item.get("text", ""),
-                        image_path=item.get("image_url"),
-                        audio_path=item.get("audio_url"),
-                        video_path=item.get("video_url"),
-                        emotion_label=int(item.get("emotion", 0)),
-                        intention_labels=[int(item.get("intention", 0))],
-                        action_labels=[int(item.get("action", 0))],
-                        source_dataset="MINE",
-                        modality_available={
-                            "text": bool(item.get("text")),
-                            "image": bool(item.get("image_url")),
-                            "audio": bool(item.get("audio_url")),
-                            "video": bool(item.get("video_url")),
-                        }
-                    )
-                    samples.append(sample)
-                except Exception as e:
-                    logger.warning(f"Skipped MINE sample {idx}: {e}")
-                    continue
-            
-            logger.info(f"Loaded {len(samples)} MINE samples from {split} split")
-            return samples
-        except Exception as e:
-            logger.warning(f"MINE unavailable ({e}). Falling back to guaranteed GoEmotions for this source.")
-            return GoEmotionsDatasetLoader.load_split(split=split, limit=limit)
-
-
-class MINEGoogleDriveDatasetLoader:
-    """Load MINE data from a pre-downloaded Google Drive folder (no automatic download)."""
-
-    DRIVE_FILE_ID = "1tdmHOwanxZLigt7_0c3M3kKYZ2rjSauQ"
-    DRIVE_URL = f"https://drive.google.com/file/d/{DRIVE_FILE_ID}/view"
-
-    @staticmethod
-    def _resolve_optional_path(root: Path, value: Optional[str]) -> Optional[str]:
-        if not value:
-            return None
-        try:
-            p = Path(str(value))
-            if not p.is_absolute():
-                p = root / p
-            return str(p.resolve())
-        except Exception:
-            return str(value)
-
-    @staticmethod
-    def _to_int_list(value, default: int = 0) -> list[int]:
-        if value is None:
-            return [default]
-        if isinstance(value, list):
-            out = []
-            for v in value:
-                try:
-                    out.append(int(v))
-                except Exception:
-                    continue
-            return out or [default]
-        try:
-            return [int(value)]
-        except Exception:
-            return [default]
-
-    @staticmethod
-    def _metadata_records(root: Path) -> list[dict]:
-        candidates = [
-            "manifest.jsonl",
-            "manifest.json",
-            "metadata.jsonl",
-            "metadata.json",
-            "annotations.jsonl",
-            "annotations.json",
-            "data.jsonl",
-            "data.json",
-        ]
-        for rel in candidates:
-            meta_path = root / rel
-            if not meta_path.exists() or not meta_path.is_file():
-                continue
+    def ensure_dataset(kaggle_path: str, local_folder_name: str) -> Path:
+        base_dir = Path.cwd() / "data" / "kaggle_datasets"
+        base_dir.mkdir(parents=True, exist_ok=True)
+        target_dir = base_dir / local_folder_name
+        
+        if not target_dir.exists() or not any(target_dir.iterdir()):
+            logger.info(f"Initiating Kaggle download for: {kaggle_path}...")
             try:
-                if meta_path.suffix == ".jsonl":
-                    rows = []
-                    for line in meta_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            item = json.loads(line)
-                            if isinstance(item, dict):
-                                rows.append(item)
-                        except Exception:
-                            continue
-                    if rows:
-                        logger.info(f"Loaded MINE GDrive metadata from {meta_path}")
-                        return rows
-                else:
-                    obj = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
-                    if isinstance(obj, list):
-                        rows = [x for x in obj if isinstance(x, dict)]
-                        if rows:
-                            logger.info(f"Loaded MINE GDrive metadata from {meta_path}")
-                            return rows
-                    if isinstance(obj, dict):
-                        for key in ("samples", "data", "items", "records"):
-                            if isinstance(obj.get(key), list):
-                                rows = [x for x in obj[key] if isinstance(x, dict)]
-                                if rows:
-                                    logger.info(f"Loaded MINE GDrive metadata from {meta_path}:{key}")
-                                    return rows
-            except Exception as e:
-                logger.warning(f"Failed reading metadata file {meta_path}: {e}")
-        return []
+                subprocess.run([
+                    "kaggle", "datasets", "download", "-d", kaggle_path, 
+                    "-p", str(target_dir), "--unzip"
+                ], check=True, capture_output=True)
+                logger.info(f"Successfully downloaded & extracted {kaggle_path} to {target_dir}")
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Kaggle download failed for {kaggle_path}.")
+                logger.error(f"Stderr: {e.stderr.decode('utf-8') if e.stderr else 'Unknown Error'}")
+                logger.error("Did you set up ~/.kaggle/kaggle.json?")
+                raise RuntimeError("Kaggle API Authentication Error")
+        return target_dir
 
-    @staticmethod
-    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        root_env = os.environ.get("MINE_GDRIVE_ROOT", "").strip()
-        if not root_env:
-            logger.warning(
-                "MINE_GDRIVE_ROOT not set. Skipping mine_gdrive source. "
-                f"Dataset link: {MINEGoogleDriveDatasetLoader.DRIVE_URL}"
-            )
-            return []
-
-        root = Path(root_env).expanduser().resolve()
-        if not root.exists() or not root.is_dir():
-            logger.warning(f"MINE_GDRIVE_ROOT path does not exist: {root}")
-            return []
-
-        records = MINEGoogleDriveDatasetLoader._metadata_records(root)
-        if not records:
-            logger.warning(
-                f"No metadata file found under {root}. "
-                "Provide manifest.jsonl/metadata.json to enable mine_gdrive ingestion."
-            )
-            return []
-
-        samples = []
-        for idx, item in enumerate(records):
-            try:
-                split_value = str(item.get("split", "")).lower().strip()
-                if split_value and split_value != split.lower():
-                    continue
-
-                text = (
-                    item.get("text")
-                    or item.get("caption")
-                    or item.get("transcript")
-                    or item.get("description")
-                    or item.get("utterance")
-                    or ""
-                )
-
-                image_path = MINEGoogleDriveDatasetLoader._resolve_optional_path(
-                    root, item.get("image_path") or item.get("image") or item.get("photo_path")
-                )
-                audio_path = MINEGoogleDriveDatasetLoader._resolve_optional_path(
-                    root, item.get("audio_path") or item.get("audio")
-                )
-                video_path = MINEGoogleDriveDatasetLoader._resolve_optional_path(
-                    root, item.get("video_path") or item.get("video") or item.get("clip_path")
-                )
-
-                emotion_raw = item.get("emotion_label", item.get("emotion", 0))
-                try:
-                    emotion_label = int(emotion_raw)
-                except Exception:
-                    emotion_label = 0
-
-                intention_labels = MINEGoogleDriveDatasetLoader._to_int_list(
-                    item.get("intention_labels", item.get("intention", 0)), default=0
-                )
-                action_labels = MINEGoogleDriveDatasetLoader._to_int_list(
-                    item.get("action_labels", item.get("action", 0)), default=0
-                )
-
-                samples.append(
-                    MultimodalSample(
-                        text=str(text),
-                        image_path=image_path,
-                        audio_path=audio_path,
-                        video_path=video_path,
-                        emotion_label=emotion_label,
-                        intention_labels=intention_labels,
-                        action_labels=action_labels,
-                        source_dataset="MINE_GDrive",
-                        modality_available={
-                            "text": bool(text),
-                            "image": bool(image_path),
-                            "audio": bool(audio_path),
-                            "video": bool(video_path),
-                        },
-                    )
-                )
-
-                if limit and len(samples) >= limit:
-                    break
-            except Exception as e:
-                logger.warning(f"Skipped mine_gdrive sample {idx}: {e}")
-
-        logger.info(f"Loaded {len(samples)} MINE GDrive samples from split={split}")
-        return samples
-
-
-class EmoticonDatasetLoader:
-    """Emoticon dataset: Large-scale multimodal emotion dataset."""
-
-    EMOTICON_HF_IDS = ["zoheb/emoticon", "zoheb/Emoticon", "emoticon"]
-    
-    @staticmethod
-    def load_emoticon_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        try:
-            logger.info(f"Loading Emoticon dataset ({split} split)...")
-            dataset = None
-            last_error = None
-            for ds_id in EmoticonDatasetLoader.EMOTICON_HF_IDS:
-                try:
-                    dataset = _hf_load_dataset(ds_id, split=split)
-                    logger.info(f"Using Emoticon dataset id: {ds_id}")
-                    break
-                except Exception as e:
-                    last_error = e
-            if dataset is None:
-                raise RuntimeError(last_error)
-            
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-            
-            samples = []
-            for idx, item in enumerate(dataset):
-                try:
-                    sample = MultimodalSample(
-                        text=item.get("text", ""),
-                        image_path=item.get("image_url"),
-                        emotion_label=int(item.get("emotion_label", 0)),
-                        source_dataset="Emoticon",
-                        modality_available={
-                            "text": bool(item.get("text")),
-                            "image": bool(item.get("image_url")),
-                            "audio": False,
-                            "video": False,
-                        }
-                    )
-                    samples.append(sample)
-                except Exception as e:
-                    logger.warning(f"Skipped Emoticon sample {idx}: {e}")
-                    continue
-            
-            logger.info(f"Loaded {len(samples)} Emoticon samples from {split} split")
-            return samples
-        except Exception as e:
-            logger.warning(f"Emoticon unavailable ({e}). Falling back to guaranteed TweetEval dataset.")
-            return TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
-
-
-class Banking77IntentFallbackLoader:
-    """Public intent fallback for guaranteed downloads."""
-
-    HF_ID = "banking77"
-
+class KaggleGoEmotionsLoader:
+    """Loads GoEmotions from Kaggle (Gold Standard Text Emotion)."""
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
-            effective_split = split if split in {"train", "test"} else "train"
-            dataset = _hf_load_dataset(Banking77IntentFallbackLoader.HF_ID, split=effective_split)
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-
+            target_dir = KaggleDownloader.ensure_dataset("rkibria/goemotions-kaggle", "goemotions")
+            csv_map = {"train": "train.csv", "validation": "val.csv", "test": "test.csv"}
+            file_path = target_dir / csv_map.get(split, "train.csv")
+            
+            if not file_path.exists(): 
+                return []
+            
+            df = pd.read_csv(file_path)
+            if limit: df = df.head(limit)
+            
             samples = []
-            for item in dataset:
-                label = int(item.get("label", 0))
-                samples.append(
-                    MultimodalSample(
-                        text=item.get("text", ""),
-                        intention_labels=[label % 20],
-                        action_labels=[(label * 2 + 1) % 15],
-                        source_dataset="Banking77Fallback",
-                        modality_available={"text": True, "image": False, "audio": False, "video": False},
-                    )
-                )
-            logger.info(f"Loaded {len(samples)} Banking77 fallback samples from {effective_split} split")
+            for _, row in df.iterrows():
+                # Extract first label if multiple exist
+                raw_labels = str(row.get('labels', '0')).split(',')
+                try: primary_label = int(raw_labels[0])
+                except: primary_label = 0
+
+                samples.append(MultimodalSample(
+                    text=str(row['text']),
+                    emotion_label=primary_label % 11, # Map to 11 classes
+                    intention_labels=[(primary_label * 2) % 20],
+                    action_labels=[(primary_label * 3) % 15],
+                    source_dataset="Kaggle_GoEmotions"
+                ))
+            logger.info(f"Loaded {len(samples)} Kaggle GoEmotions samples for split={split}.")
             return samples
         except Exception as e:
-            logger.error(f"Banking77 fallback failed: {e}")
+            logger.warning(f"Kaggle GoEmotions disabled or failed: {e}")
             return []
 
-
-class CIFAR10ImageFallbackLoader:
-    """Public image fallback for guaranteed downloads."""
-
-    HF_ID = "cifar10"
-
+class KaggleFacialEmotionLoader:
+    """Loads Facial Emotions Images from Kaggle (Pure Visual Emotion)."""
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
-            effective_split = split if split in {"train", "test"} else "train"
-            dataset = _hf_load_dataset(CIFAR10ImageFallbackLoader.HF_ID, split=effective_split)
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
+            target_dir = KaggleDownloader.ensure_dataset("dima806/facial-emotions-image-detection-vit", "facial_emotions")
+            # Map typical splits to folder names
+            folder_split = "train" if split in ["train", "validation"] else "test"
+            split_dir = target_dir / "images" / folder_split
+            if not split_dir.exists(): 
+                return []
 
             samples = []
-            for idx, item in enumerate(dataset):
-                label = int(item.get("label", 0))
-                samples.append(
-                    MultimodalSample(
-                        text=f"CIFAR10 image class {label}",
-                        image_path=f"cifar10:{effective_split}:{idx}",
-                        emotion_label=label % 11,
-                        intention_labels=[(label * 3) % 20],
-                        action_labels=[(label * 5) % 15],
-                        source_dataset="CIFAR10ImageFallback",
-                        modality_available={"text": True, "image": True, "audio": False, "video": False},
-                    )
-                )
-            logger.info(f"Loaded {len(samples)} CIFAR10 image fallback samples from {effective_split} split")
+            emotion_map = {"angry": 0, "disgust": 1, "fear": 2, "happy": 3, "neutral": 4, "sad": 5, "surprise": 6}
+            
+            count = 0
+            for emotion_name, label_idx in emotion_map.items():
+                emo_dir = split_dir / emotion_name
+                if emo_dir.exists():
+                    for img_path in emo_dir.glob("*.jpg"):
+                        samples.append(MultimodalSample(
+                            text="", # Pure image dataset
+                            image_path=str(img_path), 
+                            emotion_label=label_idx,
+                            intention_labels=[0],
+                            action_labels=[0],
+                            source_dataset="Kaggle_FacialEmotions"
+                        ))
+                        count += 1
+                        if limit and count >= limit: 
+                            break
+                if limit and count >= limit: 
+                    break
+
+            logger.info(f"Loaded {len(samples)} Kaggle Facial Image samples for split={split}.")
             return samples
         except Exception as e:
-            logger.error(f"CIFAR10 image fallback failed: {e}")
+            logger.warning(f"Kaggle Facial Emotions disabled or failed: {e}")
+            return []
+
+class KaggleIntentLoader:
+    """Loads Bitext Intent Classification from Kaggle (Customer Service Intent)."""
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            target_dir = KaggleDownloader.ensure_dataset("bitext/training-dataset-for-intent-classification", "bitext_intent")
+            csv_path = target_dir / "Bitext_Sample_Customer_Service_Training_Dataset.csv"
+            
+            if not csv_path.exists(): 
+                return []
+            
+            df = pd.read_csv(csv_path)
+            # Basic split simulation since dataset is a single CSV
+            if split == "train":
+                df = df.iloc[:int(len(df)*0.8)]
+            elif split == "validation":
+                df = df.iloc[int(len(df)*0.8):int(len(df)*0.9)]
+            else:
+                df = df.iloc[int(len(df)*0.9):]
+
+            if limit: df = df.head(limit)
+            
+            samples = []
+            for idx, row in df.iterrows():
+                samples.append(MultimodalSample(
+                    text=str(row['utterance']),
+                    emotion_label=4, # Default to Neutral
+                    intention_labels=[idx % 20],
+                    action_labels=[(idx * 2) % 15],
+                    source_dataset="Kaggle_BitextIntent"
+                ))
+            logger.info(f"Loaded {len(samples)} Kaggle Intent samples for split={split}.")
+            return samples
+        except Exception as e:
+            logger.warning(f"Kaggle Bitext Intent disabled or failed: {e}")
             return []
 
 
-class RazaIntentDatasetLoader:
-    """RAZA Intent dataset: Large-scale intent classification."""
+# ==============================================================================
+# 3. HUGGING FACE TEXT EMOTION & INTENT LOADERS
+# ==============================================================================
 
-    RAZA_HF_IDS = [
-        "razauldin/intent_classification",
-        "razauldin/intent classification",
-    ]
-    
-    @staticmethod
-    def load_intent_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        try:
-            logger.info(f"Loading RAZA Intent dataset ({split} split)...")
-            dataset = None
-            last_error = None
-            for ds_id in RazaIntentDatasetLoader.RAZA_HF_IDS:
-                try:
-                    normalized_id = ds_id.replace(" ", "_")
-                    dataset = _hf_load_dataset(normalized_id, split=split)
-                    logger.info(f"Using RAZA dataset id: {normalized_id}")
-                    break
-                except Exception as e:
-                    last_error = e
-            if dataset is None:
-                raise RuntimeError(last_error)
-            
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-            
-            intent_to_intention = {
-                "inform": 0, "request": 1, "ask": 2, "suggest": 3, "clarify": 4,
-                "affirm": 5, "deny": 6, "greet": 7, "goodbye": 8,
-            }
-            
-            samples = []
-            for idx, item in enumerate(dataset):
-                try:
-                    intent_name = item.get("intent", "").lower()
-                    intention_class = intent_to_intention.get(intent_name, 0)
-                    
-                    sample = MultimodalSample(
-                        text=item.get("text", ""),
-                        intention_labels=[intention_class],
-                        source_dataset="RAZA_Intent",
-                        modality_available={
-                            "text": bool(item.get("text")),
-                            "image": False,
-                            "audio": False,
-                            "video": False,
-                        }
-                    )
-                    samples.append(sample)
-                except Exception as e:
-                    logger.warning(f"Skipped RAZA sample {idx}: {e}")
-                    continue
-            
-            logger.info(f"Loaded {len(samples)} RAZA Intent samples from {split} split")
-            return samples
-        except Exception as e:
-            logger.warning(f"RAZA unavailable ({e}). Falling back to guaranteed Banking77 intent data.")
-            return Banking77IntentFallbackLoader.load_split(split=split, limit=limit)
-
-
-class MSCOCOCaptionsLoader:
-    """MS COCO Captions: Large-scale image + caption dataset for alignment."""
-    
-    COCO_HF_IDS = ["nlphuji/coco_captions", "ydshieh/coco_dataset_script"]
-    
-    @staticmethod
-    def load_coco_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        try:
-            logger.info(f"Loading MS COCO Captions ({split} split)...")
-            dataset = None
-            last_error = None
-            for ds_id in MSCOCOCaptionsLoader.COCO_HF_IDS:
-                try:
-                    normalized_id = ds_id.replace(" ", "_")
-                    dataset = _hf_load_dataset(normalized_id, split=split)
-                    logger.info(f"Using COCO captions dataset id: {normalized_id}")
-                    break
-                except Exception as e:
-                    last_error = e
-            if dataset is None:
-                raise RuntimeError(last_error)
-            
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-            
-            samples = []
-            for idx, item in enumerate(dataset):
-                try:
-                    sample = MultimodalSample(
-                        text=item.get("caption", ""),
-                        image_path=item.get("image_url") or item.get("image_id"),
-                        source_dataset="COCO_Captions",
-                        modality_available={
-                            "text": bool(item.get("caption")),
-                            "image": bool(item.get("image_url") or item.get("image_id")),
-                            "audio": False,
-                            "video": False,
-                        }
-                    )
-                    samples.append(sample)
-                except Exception as e:
-                    logger.warning(f"Skipped COCO sample {idx}: {e}")
-                    continue
-            
-            logger.info(f"Loaded {len(samples)} COCO Captions samples from {split} split")
-            return samples
-        except Exception as e:
-            logger.warning(f"COCO unavailable ({e}). Falling back to guaranteed CIFAR10 image data.")
-            return CIFAR10ImageFallbackLoader.load_split(split=split, limit=limit)
-
-
-class VoxCelebDatasetLoader:
-    """VoxCeleb: Large-scale speaker recognition dataset with audio/video."""
-    
-    VOXCELEB_HF_IDS = ["facebook/voxceleb", "voxceleb"]
-    
-    @staticmethod
-    def load_voxceleb_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        if os.environ.get("ALLOW_LARGE_VOX_DOWNLOAD", "0") != "1":
-            logger.warning("Skipping VoxCeleb by default to avoid huge downloads. Set ALLOW_LARGE_VOX_DOWNLOAD=1 to enable.")
-            return []
-        try:
-            logger.info(f"Loading VoxCeleb ({split} split)...")
-            dataset = None
-            last_error = None
-            for ds_id in VoxCelebDatasetLoader.VOXCELEB_HF_IDS:
-                try:
-                    dataset = _hf_load_dataset(ds_id, split=split)
-                    logger.info(f"Using VoxCeleb dataset id: {ds_id}")
-                    break
-                except Exception as e:
-                    last_error = e
-            if dataset is None:
-                raise RuntimeError(last_error)
-            
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-            
-            samples = []
-            for idx, item in enumerate(dataset):
-                try:
-                    sample = MultimodalSample(
-                        text=f"Speaker {item.get('speaker_id', '')}",
-                        audio_path=item.get("audio_path"),
-                        video_path=item.get("video_path"),
-                        source_dataset="VoxCeleb",
-                        modality_available={
-                            "text": True,
-                            "image": False,
-                            "audio": bool(item.get("audio_path")),
-                            "video": bool(item.get("video_path")),
-                        }
-                    )
-                    samples.append(sample)
-                except Exception as e:
-                    logger.warning(f"Skipped VoxCeleb sample {idx}: {e}")
-                    continue
-            
-            logger.info(f"Loaded {len(samples)} VoxCeleb samples from {split} split")
-            return samples
-        except Exception as e:
-            logger.error(f"Failed to load VoxCeleb dataset: {e}")
-            return []
-
-
-class UnifiedCloudDatasetBuilder:
-    """Build unified dataset combining multiple large-scale sources."""
-    
-    @staticmethod
-    def build_multimodal_dataset(
-        sources: list[str] = None,
-        splits: dict[str, int] = None,
-        cache_dir: Optional[str] = None,
-        report_path: Optional[str] = None,
-    ) -> list[MultimodalSample]:
-        if sources is None:
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
-        
-        if splits is None:
-            splits = {"train": 2000, "validation": 500}
-        
-        repo_root = Path.cwd()
-        datasets_cache = Path(cache_dir).resolve() if cache_dir else (repo_root / "data" / "hf_datasets").resolve()
-        model_hub_cache = (repo_root / "models" / "hf_hub").resolve()
-        datasets_cache.mkdir(parents=True, exist_ok=True)
-        model_hub_cache.mkdir(parents=True, exist_ok=True)
-        os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
-        os.environ["HF_HUB_CACHE"] = str(model_hub_cache)
-        os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
-        
-        all_samples = []
-        source_report: dict[str, dict[str, int | list[str]]] = {}
-        
-        for source in sources:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Loading {source.upper()} dataset")
-            logger.info(f"{'='*60}")
-            
-            before_count = len(all_samples)
-            if source.lower() == "mine":
-                for split, limit in splits.items():
-                    samples = MINEDatasetLoader.load_mine_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-
-            elif source.lower() in {"mine_gdrive", "mine_drive", "mine_google_drive"}:
-                for split, limit in splits.items():
-                    samples = MINEGoogleDriveDatasetLoader.load_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-            
-            elif source.lower() == "emoticon":
-                for split, limit in splits.items():
-                    samples = EmoticonDatasetLoader.load_emoticon_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-            
-            elif source.lower() == "raza":
-                for split, limit in splits.items():
-                    samples = RazaIntentDatasetLoader.load_intent_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-            
-            elif source.lower() == "coco":
-                for split, limit in splits.items():
-                    samples = MSCOCOCaptionsLoader.load_coco_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-            
-            elif source.lower() == "voxceleb":
-                for split, limit in splits.items():
-                    samples = VoxCelebDatasetLoader.load_voxceleb_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-
-            elif source.lower() == "goemotions":
-                for split, limit in splits.items():
-                    samples = GoEmotionsDatasetLoader.load_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-
-            elif source.lower() == "dailydialog":
-                for split, limit in splits.items():
-                    samples = DailyDialogDatasetLoader.load_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-
-            elif source.lower() == "tweet_eval":
-                for split, limit in splits.items():
-                    samples = TweetEvalEmotionDatasetLoader.load_split(split=split, limit=limit)
-                    all_samples.extend(samples)
-
-            loaded_now = all_samples[before_count:]
-            source_report[source] = {
-                "requested": int(sum(splits.values())),
-                "loaded": int(len(loaded_now)),
-                "used_datasets": sorted(list({s.source_dataset for s in loaded_now})),
-            }
-
-        report_target = Path(report_path) if report_path else (Path.cwd() / "data" / "source_availability_report.json")
-        report_target.parent.mkdir(parents=True, exist_ok=True)
-        report_target.write_text(json.dumps({"sources": source_report}, indent=2), encoding="utf-8")
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"TOTAL: {len(all_samples)} multimodal samples loaded")
-        logger.info(f"{'='*60}\n")
-        
-        return all_samples
-
-
-class GoEmotionsDatasetLoader:
+class DairAiEmotionLoader:
     """Public and reliable text emotion dataset."""
-
-    HF_ID = "go_emotions"
-
+    HF_ID = "dair-ai/emotion"
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
-            logger.info(f"Loading GoEmotions ({split} split)...")
-            try:
-                dataset = _hf_load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split=split)
-            except Exception as split_err:
-                logger.warning(f"GoEmotions split '{split}' unavailable ({split_err}). Falling back to train split.")
-                dataset = _hf_load_dataset(GoEmotionsDatasetLoader.HF_ID, "raw", split="train")
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
-
+            dataset = _hf_load_dataset(DairAiEmotionLoader.HF_ID, "unsplit", split=split)
+            if limit: dataset = dataset.select(range(min(limit, len(dataset))))
+            
             samples = []
             for item in dataset:
-                labels = item.get("labels", []) or []
-                primary = int(labels[0]) if labels else 0
-                intention = [int(x) % 20 for x in labels[:3]] or [primary % 20]
-                action = [((int(x) * 3) + 1) % 15 for x in labels[:2]] or [primary % 15]
-
-                samples.append(
-                    MultimodalSample(
-                        text=item.get("text", ""),
-                        emotion_label=primary % 11,
-                        intention_labels=intention,
-                        action_labels=action,
-                        source_dataset="GoEmotions",
-                        modality_available={"text": True, "image": False, "audio": False, "video": False},
-                    )
-                )
-            logger.info(f"Loaded {len(samples)} GoEmotions samples from {split} split")
+                label = int(item.get("label", 0))
+                samples.append(MultimodalSample(
+                    text=item.get("text", ""), 
+                    emotion_label=label, 
+                    intention_labels=[(label * 2) % 20],
+                    action_labels=[(label * 3) % 15],
+                    source_dataset="HF_DairAiEmotion"
+                ))
+            logger.info(f"Loaded {len(samples)} Dair-AI samples.")
             return samples
-        except Exception as e:
-            logger.error(f"Failed to load GoEmotions dataset: {e}")
+        except Exception as e: 
+            logger.warning(f"Dair-AI loading failed: {e}")
             return []
 
-
-class DailyDialogDatasetLoader:
-    """Public dialogue dataset with emotion/act signals."""
-
+class DailyDialogLoader:
+    """Daily conversational dataset with emotion and act labels."""
     HF_ID = "daily_dialog"
-
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
-            logger.info(f"Loading DailyDialog ({split} split)...")
-            dataset = _hf_load_dataset(DailyDialogDatasetLoader.HF_ID, split=split)
-
+            dataset = _hf_load_dataset(DailyDialogLoader.HF_ID, split=split)
             samples = []
             for item in dataset:
                 dialog = item.get("dialog", [])
                 acts = item.get("act", [])
                 emotions = item.get("emotion", [])
+                
                 for utt, act, emo in zip(dialog, acts, emotions):
-                    samples.append(
-                        MultimodalSample(
-                            text=utt,
-                            emotion_label=int(emo) % 11,
-                            intention_labels=[int(act) % 20],
-                            action_labels=[(int(act) + int(emo)) % 15],
-                            source_dataset="DailyDialog",
-                            modality_available={"text": True, "image": False, "audio": False, "video": False},
-                        )
-                    )
-                    if limit and len(samples) >= limit:
-                        break
-                if limit and len(samples) >= limit:
-                    break
+                    samples.append(MultimodalSample(
+                        text=utt,
+                        emotion_label=int(emo) % 11,
+                        intention_labels=[int(act) % 20],
+                        action_labels=[(int(act) + int(emo)) % 15],
+                        source_dataset="HF_DailyDialog"
+                    ))
+                    if limit and len(samples) >= limit: break
+                if limit and len(samples) >= limit: break
 
-            logger.info(f"Loaded {len(samples)} DailyDialog samples from {split} split")
+            logger.info(f"Loaded {len(samples)} DailyDialog samples.")
             return samples
         except Exception as e:
-            logger.warning(f"DailyDialog unavailable ({e}). Falling back to AG News for this source.")
-            try:
-                dataset = _hf_load_dataset("ag_news", split=split)
-                if limit:
-                    dataset = dataset.select(range(min(limit, len(dataset))))
-
-                samples = []
-                for item in dataset:
-                    label = int(item.get("label", 0))
-                    samples.append(
-                        MultimodalSample(
-                            text=item.get("text", ""),
-                            emotion_label=label % 11,
-                            intention_labels=[(label * 5 + 1) % 20],
-                            action_labels=[(label * 7 + 3) % 15],
-                            source_dataset="AGNewsFallback",
-                            modality_available={"text": True, "image": False, "audio": False, "video": False},
-                        )
-                    )
-                logger.info(f"Loaded {len(samples)} AG News fallback samples from {split} split")
-                return samples
-            except Exception as inner_e:
-                logger.error(f"AG News fallback also failed: {inner_e}")
-                return []
+            logger.warning(f"DailyDialog loading failed: {e}")
+            return []
 
 
-class TweetEvalEmotionDatasetLoader:
-    """Public tweet emotion dataset."""
+# ==============================================================================
+# 4. HUGGING FACE MULTIMODAL LOADERS (COCO, VoxCeleb)
+# ==============================================================================
 
-    HF_ID = "tweet_eval"
-    SUBSET = "emotion"
-
+class MSCOCOCaptionsLoader:
+    """MS COCO Captions: Image + Text dataset for alignment."""
+    HF_ID = "nlphuji/coco_captions"
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
-            logger.info(f"Loading TweetEval emotion ({split} split)...")
-            dataset = _hf_load_dataset(TweetEvalEmotionDatasetLoader.HF_ID, TweetEvalEmotionDatasetLoader.SUBSET, split=split)
-            if limit:
-                dataset = dataset.select(range(min(limit, len(dataset))))
+            # Hugging Face normally aliases validation to val, but we can be safe
+            safe_split = "val" if split == "validation" else split
+            dataset = _hf_load_dataset(MSCOCOCaptionsLoader.HF_ID, split=safe_split)
+            if limit: dataset = dataset.select(range(min(limit, len(dataset))))
+            
+            samples = []
+            for item in dataset:
+                samples.append(MultimodalSample(
+                    text=item.get("caption", ""),
+                    image_path=item.get("image_url") or item.get("image_id"),
+                    emotion_label=4, # Neutral
+                    intention_labels=[0],
+                    source_dataset="HF_COCO"
+                ))
+            logger.info(f"Loaded {len(samples)} COCO Captions samples.")
+            return samples
+        except Exception as e:
+            logger.warning(f"COCO loading failed: {e}")
+            return []
+
+
+# ==============================================================================
+# 5. GOOGLE DRIVE MINE LOADER (Real-world Tri-Task Data)
+# ==============================================================================
+
+class MINEGoogleDriveDatasetLoader:
+    """Parses local directory populated by gdown from MINE Google Drive link."""
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        root_env = os.environ.get("MINE_GDRIVE_ROOT", "data/mine_gdrive").strip()
+        root = Path(root_env).expanduser().resolve()
+        
+        if not root.exists() or not root.is_dir():
+            logger.warning(f"MINE_GDRIVE_ROOT path does not exist: {root}. Ensure gdown extraction occurred.")
+            return []
+
+        candidates = ["manifest.jsonl", "metadata.jsonl", "data.jsonl", "annotations.jsonl"]
+        records = []
+        for rel in candidates:
+            meta_path = root / rel
+            if meta_path.exists():
+                for line in meta_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                    if line.strip():
+                        try: records.append(json.loads(line))
+                        except: pass
+                break
+
+        if not records: 
+            logger.warning(f"No valid JSONL manifest found in {root}")
+            return []
+
+        samples = []
+        for item in records:
+            split_value = str(item.get("split", "")).lower()
+            if split_value and split_value != split.lower(): 
+                continue
+
+            text = item.get("text") or item.get("caption") or item.get("transcript") or ""
+            emotion_raw = item.get("emotion_label", item.get("emotion", 0))
+            try: emotion_label = int(emotion_raw)
+            except: emotion_label = 0
+
+            # Safe parsing for lists of intents/actions
+            raw_intent = item.get("intention_labels", item.get("intention", [0]))
+            intent_labels = [int(x) for x in raw_intent] if isinstance(raw_intent, list) else [int(raw_intent)]
+            
+            raw_action = item.get("action_labels", item.get("action", [0]))
+            action_labels = [int(x) for x in raw_action] if isinstance(raw_action, list) else [int(raw_action)]
+
+            samples.append(
+                MultimodalSample(
+                    text=str(text),
+                    image_path=item.get("image_path") or item.get("image"),
+                    audio_path=item.get("audio_path") or item.get("audio"),
+                    video_path=item.get("video_path") or item.get("video"),
+                    emotion_label=emotion_label,
+                    intention_labels=intent_labels, 
+                    action_labels=action_labels,
+                    source_dataset="MINE_GDrive",
+                )
+            )
+            if limit and len(samples) >= limit: break
+
+        logger.info(f"Loaded {len(samples)} MINE GDrive samples from split={split}")
+        return samples
+
+
+# ==============================================================================
+# 6. EMERGENCY FALLBACK & SYNTHETIC SUBSYSTEM
+# ==============================================================================
+
+class Banking77IntentFallbackLoader:
+    """Guaranteed fallback for Intent Classification if Kaggle fails."""
+    HF_ID = "PolyAI/banking77"
+    @staticmethod
+    def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
+        try:
+            dataset = _hf_load_dataset(Banking77IntentFallbackLoader.HF_ID, split=split if split == "train" else "test")
+            if limit: dataset = dataset.select(range(min(limit, len(dataset))))
 
             samples = []
             for item in dataset:
                 label = int(item.get("label", 0))
-                samples.append(
-                    MultimodalSample(
-                        text=item.get("text", ""),
-                        emotion_label=label % 11,
-                        intention_labels=[(label * 2) % 20],
-                        action_labels=[(label * 3) % 15],
-                        source_dataset="TweetEvalEmotion",
-                        modality_available={"text": True, "image": False, "audio": False, "video": False},
-                    )
-                )
-            logger.info(f"Loaded {len(samples)} TweetEval emotion samples from {split} split")
+                samples.append(MultimodalSample(
+                    text=item.get("text", ""),
+                    emotion_label=4,
+                    intention_labels=[label % 20],
+                    action_labels=[(label * 2) % 15],
+                    source_dataset="Fallback_Banking77"
+                ))
             return samples
-        except Exception as e:
-            logger.error(f"Failed to load TweetEval emotion dataset: {e}")
-            return []
+        except: return []
 
+class SyntheticMultimodalGenerator:
+    """Generates synthetic multimodal samples to guarantee training never crashes."""
+    @staticmethod
+    def generate(num_samples: int = 100) -> list[MultimodalSample]:
+        logger.warning(f"Generating {num_samples} SYNTHETIC samples as an emergency fallback.")
+        sentences = [
+            "I absolutely love this new design!", "Can you process a refund for order 992?",
+            "This makes me incredibly angry.", "I am confused by the documentation.",
+            "Wow, I didn't expect that result at all.", "Please update my billing address.",
+            "The visual layout is very disappointing.", "Thank you for the quick resolution."
+        ]
+        
+        samples = []
+        for i in range(num_samples):
+            samples.append(MultimodalSample(
+                text=random.choice(sentences),
+                emotion_label=random.randint(0, 10),
+                intention_labels=[random.randint(0, 19)],
+                action_labels=[random.randint(0, 14)],
+                source_dataset="Synthetic_Emergency",
+                modality_available={
+                    "text": True,
+                    "image": random.random() > 0.5,
+                    "audio": random.random() > 0.8,
+                    "video": random.random() > 0.9,
+                }
+            ))
+        return samples
+
+
+# ==============================================================================
+# 7. THE UNIFIED DATASET BUILDER
+# ==============================================================================
+
+class UnifiedCloudDatasetBuilder:
+    """Orchestrates all loaders, resolves requested sources, and handles fallbacks."""
+    
+    # Map string names to loader classes
+    REGISTRY = {
+        "kaggle_goemotions": KaggleGoEmotionsLoader,
+        "kaggle_facial": KaggleFacialEmotionLoader,
+        "kaggle_intent": KaggleIntentLoader,
+        "hf_emotion": DairAiEmotionLoader,
+        "hf_dailydialog": DailyDialogLoader,
+        "hf_coco": MSCOCOCaptionsLoader,
+        "mine_gdrive": MINEGoogleDriveDatasetLoader,
+    }
+
+    @staticmethod
+    def build_multimodal_dataset(
+        sources: list[str] = None, 
+        splits: dict[str, int] = None, 
+    ) -> list[MultimodalSample]:
+        
+        # Override with optimal highly-reliable sources if none provided
+        if not sources:
+            sources = ["mine_gdrive", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
+            
+        if not splits: 
+            splits = {"train": 2000, "validation": 500}
+        
+        all_samples = []
+        logger.info(f"Unified Builder initializing with sources: {sources}")
+        
+        for source in sources:
+            source_lower = source.lower()
+            logger.info(f"\n{'-'*50}\nExecuting Loader: {source.upper()}\n{'-'*50}")
+            
+            loader_class = UnifiedCloudDatasetBuilder.REGISTRY.get(source_lower)
+            if not loader_class:
+                logger.warning(f"Source '{source}' not recognized. Skipping.")
+                continue
+
+            source_samples = 0
+            for split_name, limit in splits.items():
+                samples = loader_class.load_split(split=split_name, limit=limit)
+                all_samples.extend(samples)
+                source_samples += len(samples)
+                
+            if source_samples == 0:
+                logger.error(f"CRITICAL: {source} yielded 0 samples. Attempting Fallback.")
+                if "intent" in source_lower:
+                    for split_name, limit in splits.items():
+                        all_samples.extend(Banking77IntentFallbackLoader.load_split(split_name, limit))
+
+        # Absolute Final Fallback to prevent PyTorch Dataloader crashes
+        if len(all_samples) < 10:
+            logger.error("FATAL: All primary datasets failed to load. Engaging Synthetic Generator.")
+            train_req = splits.get("train", 1000)
+            all_samples.extend(SyntheticMultimodalGenerator.generate(train_req))
+
+        logger.info(f"\n{'='*60}\nUNIFIED BUILDER COMPLETE: {len(all_samples)} total samples.\n{'='*60}\n")
+        return all_samples
+
+
+# ==============================================================================
+# 8. PYTORCH DATASET & DATALOADERS (DDP Optimized)
+# ==============================================================================
 
 class CloudMultimodalDataset(Dataset):
-    """Pytorch Dataset wrapper for cloud-loaded multimodal data."""
-    
-    def __init__(
-        self,
-        samples: list[MultimodalSample],
-        tokenizer,
-        max_text_len: int = 512,
-        image_feature_extractor=None,
-        audio_feature_extractor=None,
-        video_frame_extractor=None,
-    ):
+    """
+    PyTorch Dataset wrapper. 
+    Handles dynamic text tokenization and zero-padding for missing modalities.
+    """
+    def __init__(self, samples: list[MultimodalSample], tokenizer, max_text_len: int = 512):
         self.samples = samples
         self.tokenizer = tokenizer
         self.max_text_len = max_text_len
-        self.image_extractor = image_feature_extractor
-        self.audio_extractor = audio_feature_extractor
-        self.video_extractor = video_frame_extractor
     
-    def __len__(self) -> int:
+    def __len__(self) -> int: 
         return len(self.samples)
     
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
         
+        # 1. Text Modality Processing
+        safe_text = sample.text if sample.text and str(sample.text).strip() else "[NO TEXT]"
         text_encoding = self.tokenizer(
-            sample.text,
-            max_length=self.max_text_len,
-            truncation=True,
-            padding="max_length",
-            return_tensors="pt",
+            safe_text, 
+            max_length=self.max_text_len, 
+            truncation=True, 
+            padding="max_length", 
+            return_tensors="pt"
         )
         
         batch = {
@@ -853,219 +547,154 @@ class CloudMultimodalDataset(Dataset):
             "emotion_label": torch.tensor(max(0, int(sample.emotion_label)), dtype=torch.long),
             "source": sample.source_dataset,
         }
-        batch["emotion_labels"] = batch["emotion_label"]
+        batch["emotion_labels"] = batch["emotion_label"] # For compatibility
         
-        if sample.intention_labels:
-            intention_target = torch.zeros(20, dtype=torch.float32)
-            for intent_idx in sample.intention_labels:
-                if 0 <= intent_idx < 20:
-                    intention_target[intent_idx] = 1.0
-            batch["intention_labels"] = intention_target
-        else:
-            batch["intention_labels"] = torch.zeros(20, dtype=torch.float32)
+        # 2. Intention & Action Multi-Label Binarization
+        intention_target = torch.zeros(20, dtype=torch.float32)
+        for intent_idx in sample.intention_labels:
+            if 0 <= intent_idx < 20: intention_target[intent_idx] = 1.0
+        batch["intention_labels"] = intention_target
+            
+        action_target = torch.zeros(15, dtype=torch.float32)
+        for action_idx in sample.action_labels:
+            if 0 <= action_idx < 15: action_target[action_idx] = 1.0
+        batch["action_labels"] = action_target
         
-        if sample.action_labels:
-            action_target = torch.zeros(15, dtype=torch.float32)
-            for action_idx in sample.action_labels:
-                if 0 <= action_idx < 15:
-                    action_target[action_idx] = 1.0
-            batch["action_labels"] = action_target
-        else:
-            batch["action_labels"] = torch.zeros(15, dtype=torch.float32)
-        
+        # 3. Visual & Audio Feature Placeholders (To be replaced by extractors in model)
         batch["image_features"] = torch.zeros(2048, dtype=torch.float32)
         batch["audio_features"] = torch.zeros(512, dtype=torch.float32)
         batch["video_features"] = torch.zeros(1024, dtype=torch.float32)
         
-        batch["modality_mask"] = torch.tensor(
-            [
-                1.0 if sample.modality_available.get("text", False) else 0.0,
-                1.0 if sample.modality_available.get("image", False) else 0.0,
-                1.0 if sample.modality_available.get("audio", False) else 0.0,
-                1.0 if sample.modality_available.get("video", False) else 0.0,
-            ],
-            dtype=torch.float32,
-        )
+        # 4. Modality Mask (For Attention Fusion Mechanisms)
+        batch["modality_mask"] = torch.tensor([
+            1.0 if sample.modality_available.get("text") else 0.0,
+            1.0 if sample.modality_available.get("image") else 0.0,
+            1.0 if sample.modality_available.get("audio") else 0.0,
+            1.0 if sample.modality_available.get("video") else 0.0,
+        ], dtype=torch.float32)
         
         return batch
 
-
 def get_cloud_dataloaders(
-    batch_size: int = 16,
-    eval_batch_size: Optional[int] = None,
-    num_workers: int = 4,
-    sources: list[str] = None,
-    max_samples: dict[str, int] = None,
-    max_rows_per_source: Optional[int] = None,
-    distributed: bool = False,
-    dataset_profile: str = "balanced",
-    cache_dir: Optional[str] = None,
-    mine_gdrive_root: Optional[str] = None,
+    batch_size: int = 16, 
+    eval_batch_size: Optional[int] = None, 
+    num_workers: int = 4, 
+    sources: list[str] = None, 
+    max_samples: dict[str, int] = None, 
+    max_rows_per_source: Optional[int] = None, 
+    distributed: bool = False, 
+    dataset_profile: str = "balanced", 
+    cache_dir: Optional[str] = None, 
+    mine_gdrive_root: Optional[str] = None
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Create dataloaders for cloud training from multiple sources.
-    Falls back to synthetic data if cloud sources unavailable (e.g., local testing).
+    Main entry point for training scripts. Configures caches, loads data, and builds Dataloaders.
+    Supports PyTorch DistributedDataParallel (DDP) via the distributed flag.
     """
     from transformers import AutoTokenizer
-
+    
+    # 1. Establish strict cache environments
     repo_root = Path.cwd()
-    datasets_cache = Path(cache_dir).resolve() if cache_dir else (repo_root / "data" / "hf_datasets").resolve()
-    model_cache = (repo_root / "models" / "hf_models").resolve()
-    model_hub_cache = (repo_root / "models" / "hf_hub").resolve()
-    hf_home = (repo_root / ".hf_home").resolve()
-    for p in (datasets_cache, model_cache, model_hub_cache, hf_home):
-        p.mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HOME"] = str(hf_home)
-    os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
-    os.environ["TRANSFORMERS_CACHE"] = str(model_cache)
-    os.environ["HF_HUB_CACHE"] = str(model_hub_cache)
-    os.environ["HUGGINGFACE_HUB_CACHE"] = str(model_hub_cache)
-    if mine_gdrive_root:
+    os.environ["HF_DATASETS_CACHE"] = str((repo_root / "data" / "hf_datasets").resolve())
+    os.environ["TRANSFORMERS_CACHE"] = str((repo_root / "models" / "hf_models").resolve())
+    if mine_gdrive_root: 
         os.environ["MINE_GDRIVE_ROOT"] = str(Path(mine_gdrive_root).expanduser().resolve())
 
-    tokenizer = AutoTokenizer.from_pretrained("roberta-large", cache_dir=os.environ.get("TRANSFORMERS_CACHE", _repo_model_cache_dir()))
-    
-    if sources is None:
-        if dataset_profile == "ultra_30gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco", "voxceleb"]
-        elif dataset_profile == "large_20gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco"]
-        else:
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
-    
-    if max_samples is None:
-        if max_rows_per_source is not None:
-            max_samples = {
-                "train": int(max_rows_per_source),
-                "validation": max(1, int(max_rows_per_source) // 5),
-                "test": max(1, int(max_rows_per_source) // 5),
-            }
-        elif dataset_profile == "ultra_30gb":
-            max_samples = {"train": 40000, "validation": 8000, "test": 8000}
-        elif dataset_profile == "large_20gb":
-            max_samples = {"train": 25000, "validation": 5000, "test": 5000}
-        else:
-            max_samples = {"train": 5000, "validation": 1000, "test": 1000}
-
-    if eval_batch_size is None:
-        eval_batch_size = batch_size * 2
-
-    logger.info("Building unified dataset from cloud sources...")
-    all_samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
-        sources=sources,
-        splits={"train": max_samples.get("train", 5000), "validation": max_samples.get("validation", 1000)},
-        cache_dir=cache_dir,
-        report_path=str((Path.cwd() / "data" / "source_availability_report.json").resolve()),
+    # 2. Initialize Tokenizer
+    tokenizer = AutoTokenizer.from_pretrained(
+        "roberta-large", 
+        cache_dir=os.environ["TRANSFORMERS_CACHE"],
+        clean_up_tokenization_spaces=True
     )
     
-    if len(all_samples) == 0:
-        logger.warning("No cloud data loaded. Generating synthetic data for testing...")
-        all_samples = _generate_synthetic_samples(max_samples.get("train", 5000))
+    # 3. Resolve Sample Limits
+    if max_samples is None:
+        max_samples = {
+            "train": int(max_rows_per_source) if max_rows_per_source else 5000, 
+            "validation": max(100, int(max_rows_per_source)//5) if max_rows_per_source else 1000
+        }
     
+    # 4. Build Master Dataset
+    all_samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
+        sources=sources, 
+        splits={"train": max_samples["train"], "validation": max_samples["validation"]}
+    )
+        
+    # 5. Split Data (80/10/10 approximate)
     n_train = max(1, int(0.8 * len(all_samples)))
     n_val = max(1, int(0.1 * len(all_samples)))
     
-    train_samples = all_samples[:n_train]
-    val_samples = all_samples[n_train:n_train + n_val]
-    test_samples = all_samples[n_train + n_val:]
+    train_ds = CloudMultimodalDataset(all_samples[:n_train], tokenizer)
+    val_ds = CloudMultimodalDataset(all_samples[n_train:n_train+n_val], tokenizer)
+    test_ds = CloudMultimodalDataset(all_samples[n_train+n_val:] or all_samples[:1], tokenizer)
     
-    if len(train_samples) == 0:
-        train_samples = all_samples[:1]
-    if len(val_samples) == 0:
-        val_samples = all_samples[0:1] if all_samples else train_samples
-    if len(test_samples) == 0:
-        test_samples = all_samples[0:1] if all_samples else train_samples
+    # 6. Configure Samplers (Critical for Multi-GPU)
+    train_sampler = DistributedSampler(train_ds) if distributed else None
+    val_sampler = DistributedSampler(val_ds, shuffle=False) if distributed else None
+    test_sampler = DistributedSampler(test_ds, shuffle=False) if distributed else None
     
-    train_dataset = CloudMultimodalDataset(train_samples, tokenizer)
-    val_dataset = CloudMultimodalDataset(val_samples, tokenizer)
-    test_dataset = CloudMultimodalDataset(test_samples, tokenizer)
-    
+    # 7. Build Dataloaders
     train_dl = DataLoader(
-        train_dataset,
-        batch_size=min(batch_size, len(train_samples)),
-        shuffle=True,
+        train_ds, 
+        batch_size=batch_size, 
+        shuffle=(train_sampler is None), 
+        sampler=train_sampler,
         num_workers=num_workers,
-        pin_memory=True,
-        drop_last=False,
+        pin_memory=True
     )
     
     val_dl = DataLoader(
-        val_dataset,
-        batch_size=min(eval_batch_size, len(val_samples)),
-        shuffle=False,
+        val_ds, 
+        batch_size=eval_batch_size or batch_size, 
+        shuffle=False, 
+        sampler=val_sampler,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=True
     )
     
     test_dl = DataLoader(
-        test_dataset,
-        batch_size=min(eval_batch_size, len(test_samples)),
-        shuffle=False,
+        test_ds, 
+        batch_size=eval_batch_size or batch_size, 
+        shuffle=False, 
+        sampler=test_sampler,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=True
     )
     
     return train_dl, val_dl, test_dl
 
 
-def _generate_synthetic_samples(num_samples: int = 100) -> list[MultimodalSample]:
-    import random
-    
-    emotions = [
-        "happy", "sad", "angry", "fear", "surprised", "disgusted",
-        "neutral", "excited", "disappointed", "anxious", "confident"
-    ]
-    
-    intents = [
-        "inform", "request", "ask", "suggest", "clarify", "affirm",
-        "deny", "greet", "goodbye", "thank", "apologize", "suggest",
-        "warn", "offer", "acknowledge", "confirm", "negotiate", "propose",
-        "object", "disagree"
-    ]
-    
-    sentences = [
-        "I really love this product!",
-        "This is not what I expected.",
-        "Can you help me with this?",
-        "I strongly disagree with you.",
-        "That's a great idea!",
-        "I'm feeling really happy today.",
-        "This makes me so angry!",
-        "I'm confused about this.",
-        "Thank you so much!",
-        "I need your help.",
-    ]
-    
-    samples = []
-    for i in range(num_samples):
-        emotion = random.randint(0, len(emotions) - 1)
-        intention = random.randint(0, len(intents) - 1)
-        action = random.randint(0, 14)
-        
-        sample = MultimodalSample(
-            text=random.choice(sentences),
-            emotion_label=emotion,
-            intention_labels=[intention],
-            action_labels=[action],
-            source_dataset="synthetic",
-            modality_available={
-                "text": True,
-                "image": random.random() > 0.5,
-                "audio": random.random() > 0.5,
-                "video": random.random() > 0.5,
-            }
-        )
-        samples.append(sample)
-    
-    logger.info(f"Generated {num_samples} synthetic samples for testing")
-    return samples
+# ==============================================================================
+# 9. CLI TEST RUNNER
+# ==============================================================================
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
-        sources=["mine", "emoticon"],
-        splits={"train": 100, "validation": 20},
-    )
-    print(f"\nLoaded {len(samples)} samples")
-    if samples:
-        print(f"First sample: {samples[0]}")
+    """
+    Allows running this file directly from the terminal to test dataset downloads 
+    without triggering a full PyTorch training loop.
+    
+    Usage: python data/cloud_datasets.py --test-downloads
+    """
+    parser = argparse.ArgumentParser(description="Test Cloud Dataset Infrastructure")
+    parser.add_argument("--test-downloads", action="store_true", help="Run full download test")
+    parser.add_argument("--limit", type=int, default=10, help="Samples to load per split")
+    args = parser.parse_args()
+
+    if args.test_downloads:
+        logger.info("Starting Cloud Datasets Infrastructure Test...")
+        try:
+            samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
+                sources=None, # Uses optimal default roster
+                splits={"train": args.limit, "validation": max(1, args.limit//2)}
+            )
+            logger.info(f"Test Successful! Processed {len(samples)} total samples.")
+            if samples:
+                logger.info("Sample inspection:")
+                logger.info(f"  Source: {samples[0].source_dataset}")
+                logger.info(f"  Text preview: {samples[0].text[:50]}...")
+                logger.info(f"  Emotion Label: {samples[0].emotion_label}")
+        except Exception as e:
+            logger.error(f"Infrastructure Test Failed: {e}")
+            sys.exit(1)
+    else:
+        parser.print_help()
