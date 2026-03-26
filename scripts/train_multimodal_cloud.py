@@ -170,7 +170,7 @@ def train_one_epoch(
     total_loss = 0
     num_batches = 0
     
-    scaler = torch.cuda.amp.GradScaler() if fp16 else None
+    scaler = torch.amp.GradScaler('cuda') if fp16 else None
     
     for batch_idx, batch in enumerate(train_loader):
         # Move to device
@@ -196,7 +196,7 @@ def train_one_epoch(
         
         # Forward pass
         if fp16:
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 model_output = model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -608,7 +608,7 @@ def main():
         config["learning_rate"] = args.learning_rate
     if args.max_rows_per_source:
         config["max_rows_per_source"] = args.max_rows_per_source
-    if args.num_workers:
+    if args.num_workers is not None:
         config["num_workers"] = args.num_workers
     if args.fp16:
         config["fp16"] = True
