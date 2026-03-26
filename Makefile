@@ -5,7 +5,7 @@ help:
 	@echo "========================================="
 	@echo ""
 	@echo "Available targets:"
-	@echo "  make install          - Install all dependencies (Blackwell Optimized)"
+	@echo "  make install          - Install all dependencies (Standard/T4 Optimized)"
 	@echo "  make demo            - Run Streamlit demo app"
 	@echo "  make train           - Train world-class model"
 	@echo "  make real-data       - Download real public datasets"
@@ -36,7 +36,7 @@ help:
 	@echo "  make aws-setup               - Auto-setup AWS environment"
 	@echo "  make aws-verify              - Verify GPUs and PyTorch"
 	@echo "  make aws-smoke               - Quick test on AWS (1 min)"
-	@echo "  make aws-train               - Full training on AWS (5-6 hours)"
+	@echo "  make aws-train               - Full training on AWS (12+ hours)"
 	@echo "  make aws-download-results    - Download results locally"
 	@echo "  make aws-status              - Check AWS environment"
 	@echo ""
@@ -61,7 +61,7 @@ install:
 	pip install --upgrade pip
 	pip install -r requirements.txt
 	pip install -r requirements-inference.txt
-	@echo "Dependencies installed for Blackwell architecture!"
+	@echo "Dependencies installed for standard/T4 GPU architecture!"
 
 demo:
 	streamlit run app.py
@@ -97,14 +97,14 @@ multimodal-single-gpu:
 	python scripts/train_multimodal_cloud.py \
 		--config configs/multimodal_cloud.json \
 		--output-dir checkpoints/multimodal-single-gpu \
-		--epochs 4 --batch-size 16 --max-rows-per-source 2000 --num-workers 2
+		--epochs 4 --batch-size 8 --max-rows-per-source 2000 --num-workers 2
 
 multimodal-multi-gpu:
 	torchrun --nproc_per_node=4 \
 		scripts/train_multimodal_cloud.py \
 		--config configs/multimodal_cloud.json \
 		--output-dir checkpoints/multimodal-multi-gpu \
-		--epochs 4 --batch-size 32 --max-rows-per-source 5000 --num-workers 4
+		--epochs 4 --batch-size 8 --max-rows-per-source 5000 --num-workers 4
 
 multimodal-cloud:
 	bash scripts/run_multimodal_supercomputer.sh configs/multimodal_cloud.json 4 checkpoints/multimodal-full
@@ -112,12 +112,12 @@ multimodal-cloud:
 multimodal-ablation-no-reliability:
 	python scripts/train_multimodal_cloud.py \
 		--output-dir checkpoints/ablations/multimodal-no-reliability \
-		--epochs 2 --batch-size 16 --seeds 41 42
+		--epochs 2 --batch-size 8 --seeds 41 42
 
 multimodal-ablation-text-only:
 	python scripts/train_bear_intention_cloud.py \
 		--output-dir checkpoints/ablations/text-only \
-		--epochs 2 --batch-size 16 --seeds 41 42
+		--epochs 2 --batch-size 8 --seeds 41 42
 
 # ═══════════════════════════════════════════════════════════════════
 # ADVANCED MULTIMODAL TARGETS (Dual-Layer LLM + Auto-PDF)
@@ -137,7 +137,7 @@ advanced-single-gpu:
 	python scripts/train_advanced_multimodal.py \
 		--config configs/multimodal_cloud.json \
 		--output-dir checkpoints/advanced-single-gpu \
-		--epochs 4 --batch-size 16 --max-rows-per-source 2000 --num-workers 2 \
+		--epochs 4 --batch-size 8 --max-rows-per-source 2000 --num-workers 2 \
 		--seeds 41 42 43
 	@echo "✅ Training complete! PDF at: checkpoints/advanced-single-gpu/RESEARCH_RESULTS_REPORT.pdf"
 
@@ -147,7 +147,7 @@ advanced-multi-gpu:
 		scripts/train_advanced_multimodal.py \
 		--config configs/multimodal_cloud.json \
 		--output-dir checkpoints/advanced-multi-gpu \
-		--epochs 4 --batch-size 32 --max-rows-per-source 5000 --num-workers 4 \
+		--epochs 4 --batch-size 8 --max-rows-per-source 5000 --num-workers 4 \
 		--seeds 41 42 43
 	@echo "✅ Training complete! PDF at: checkpoints/advanced-multi-gpu/RESEARCH_RESULTS_REPORT.pdf"
 
@@ -162,14 +162,14 @@ advanced-cloud:
 		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_advanced_multimodal.py \
 			--config configs/multimodal_cloud.json \
 			--output-dir checkpoints/advanced-results-final \
-			--epochs 4 --batch-size 32 --max-rows-per-source 5000 --num-workers 4 \
+			--epochs 4 --batch-size 8 --max-rows-per-source 5000 --num-workers 4 \
 			--seeds 41 42 43; \
 	else \
 		echo "Using single GPU..."; \
 		python scripts/train_advanced_multimodal.py \
 			--config configs/multimodal_cloud.json \
 			--output-dir checkpoints/advanced-results-final \
-			--epochs 4 --batch-size 16 --max-rows-per-source 2500 --num-workers 2 \
+			--epochs 4 --batch-size 8 --max-rows-per-source 2500 --num-workers 2 \
 			--seeds 41 42 43; \
 	fi
 	@echo ""
@@ -192,7 +192,7 @@ advanced-best:
 			--config configs/multimodal_ultra_30gb.json \
 			--dataset-profile ultra_30gb \
 			--output-dir checkpoints/advanced-best-ultra \
-			--epochs 5 --batch-size 32 --max-rows-per-source 40000 --num-workers 4 \
+			--epochs 5 --batch-size 8 --max-rows-per-source 40000 --num-workers 4 \
 			--seeds 41 42 43; \
 	else \
 		echo "Using single GPU mode"; \
@@ -200,7 +200,7 @@ advanced-best:
 			--config configs/multimodal_ultra_30gb.json \
 			--dataset-profile ultra_30gb \
 			--output-dir checkpoints/advanced-best-ultra \
-			--epochs 5 --batch-size 16 --max-rows-per-source 30000 --num-workers 2 \
+			--epochs 5 --batch-size 8 --max-rows-per-source 30000 --num-workers 2 \
 			--seeds 41 42 43; \
 	fi
 	@echo "Run complete"
@@ -219,7 +219,7 @@ predownload-ultra:
 	@du -sh .hf_cache || true
 
 professor-run:
-	@echo "Professor one-command run (strict + reproducible)"
+	@echo "Professor one-command run (strict + reproducible, 16GB VRAM limits)"
 	@mkdir -p data/hf_datasets models/hf_models models/hf_hub checkpoints/professor-run
 	@python -c "import torch,sys; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA devices:', torch.cuda.device_count()); sys.exit(0 if torch.cuda.is_available() else 1)" || (echo "ERROR: CUDA is not available. Install a CUDA-enabled PyTorch build and run again." && exit 1)
 	@CONFIG_PATH="configs/multimodal_cloud.json"; \
@@ -248,11 +248,13 @@ professor-run:
 		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_multimodal_cloud.py \
 			--config "$$CONFIG_PATH" \
 			--strict-preflight \
+			--batch-size 8 \
 			--output-dir checkpoints/professor-run; \
 	else \
 		python scripts/train_multimodal_cloud.py \
 			--config "$$CONFIG_PATH" \
 			--strict-preflight \
+			--batch-size 8 \
 			--output-dir checkpoints/professor-run; \
 	fi
 	@echo "Complete: checkpoints/professor-run"
@@ -282,18 +284,18 @@ aws-smoke:
 	@echo "✅ Smoke test complete! Check: checkpoints/aws-smoke/summary.json"
 
 aws-train:
-	@echo "🚀 Starting AWS full training (4-6 hours)..."
+	@echo "🚀 Starting AWS full training (12-24 hours on T4)..."
 	@GPU_COUNT=$$(nvidia-smi -L | wc -l); \
 	if [ $$GPU_COUNT -gt 1 ]; then \
 		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_multimodal_cloud.py \
 			--config configs/multimodal_cloud.json \
 			--output-dir checkpoints/aws-results \
-			--epochs 4 --batch-size 32 --max-rows-per-source 5000 --num-workers 4; \
+			--epochs 4 --batch-size 8 --max-rows-per-source 5000 --num-workers 4; \
 	else \
 		python scripts/train_multimodal_cloud.py \
 			--config configs/multimodal_cloud.json \
 			--output-dir checkpoints/aws-results \
-			--epochs 4 --batch-size 16 --max-rows-per-source 2500 --num-workers 2; \
+			--epochs 4 --batch-size 8 --max-rows-per-source 2500 --num-workers 2; \
 	fi
 	@echo "✅ Training complete! Results at: checkpoints/aws-results/"
 
@@ -332,7 +334,7 @@ aws-help:
 	@echo "3️⃣  Run Smoke Test (1 min):"
 	@echo "   $$ make aws-smoke"
 	@echo ""
-	@echo "4️⃣  Run Full Training (5-6 hours):"
+	@echo "4️⃣  Run Full Training:"
 	@echo "   $$ make aws-train"
 	@echo ""
 	@echo "5️⃣  Download Results:"
