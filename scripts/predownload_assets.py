@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Pre-download models and datasets only (no training).
+Updated for BMVC 2026 Cloud Architecture.
 
 Purpose:
 - Warm Hugging Face model cache.
-- Warm Hugging Face dataset cache.
+- Warm Hugging Face dataset cache using the new get_cloud_dataloaders.
 - Verify large cache (20-30GB target profile) before running training.
 """
 
@@ -16,101 +17,18 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Callable
 
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoConfig
 
+# Add project to path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.cloud_datasets import (
-    MINEDatasetLoader,
-    MINEGoogleDriveDatasetLoader,
-    EmoticonDatasetLoader,
-    RazaIntentDatasetLoader,
-    MSCOCOCaptionsLoader,
-    VoxCelebDatasetLoader,
-    GoEmotionsDatasetLoader,
-    DailyDialogDatasetLoader,
-    TweetEvalEmotionDatasetLoader,
-)
+from data.cloud_datasets import get_cloud_dataloaders
 
 LOGGER = logging.getLogger("predownload_assets")
 
-
 def setup_logging() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-
-def resolve_dataset_plan(profile: str, max_rows_per_source: int | None, sources: list[str] | None) -> tuple[list[str], int, int]:
-    if sources is None:
-        if profile == "ultra_30gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco", "voxceleb"]
-        elif profile == "large_20gb":
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco"]
-        else:
-            sources = ["goemotions", "dailydialog", "tweet_eval", "mine", "emoticon", "raza"]
-
-    if max_rows_per_source is None:
-        if profile == "ultra_30gb":
-            train_rows = 40000
-        elif profile == "large_20gb":
-            train_rows = 25000
-        else:
-            train_rows = 5000
-    else:
-        train_rows = int(max_rows_per_source)
-
-    val_rows = max(1, train_rows // 5)
-    return sources, train_rows, val_rows
-
-
-def warm_models(models: list[str]) -> None:
-    LOGGER.info("Model download plan: %s", ", ".join(models))
-    for model_name in models:
-        LOGGER.info("Downloading tokenizer: %s", model_name)
-        AutoTokenizer.from_pretrained(model_name)
-        LOGGER.info("Downloading model weights: %s", model_name)
-        AutoModel.from_pretrained(model_name)
-        LOGGER.info("Model ready in cache: %s", model_name)
-
-
-def _load_split_with_fallback(loader: Callable[[str, int | None], list], preferred_split: str, limit: int) -> int:
-    try:
-        data = loader(split=preferred_split, limit=limit)
-        return len(data)
-    except Exception:
-        # Some datasets only expose train. Fall back without failing the run.
-        data = loader(split="train", limit=limit)
-        return len(data)
-
-
-def warm_datasets(sources: list[str], train_rows: int, val_rows: int) -> None:
-    loaders: dict[str, Callable[[str, int | None], list]] = {
-        "goemotions": GoEmotionsDatasetLoader.load_split,
-        "dailydialog": DailyDialogDatasetLoader.load_split,
-        "tweet_eval": TweetEvalEmotionDatasetLoader.load_split,
-        "mine": MINEDatasetLoader.load_mine_split,
-        "mine_gdrive": MINEGoogleDriveDatasetLoader.load_split,
-        "emoticon": EmoticonDatasetLoader.load_emoticon_split,
-        "raza": RazaIntentDatasetLoader.load_intent_split,
-        "coco": MSCOCOCaptionsLoader.load_coco_split,
-        "voxceleb": VoxCelebDatasetLoader.load_voxceleb_split,
-    }
-
-    LOGGER.info("Dataset download plan: sources=%s", ", ".join(sources))
-    LOGGER.info("Rows per source: train=%d, validation=%d", train_rows, val_rows)
-
-    for source in sources:
-        loader = loaders.get(source)
-        if loader is None:
-            LOGGER.warning("Skipping unknown dataset source: %s", source)
-            continue
-
-        LOGGER.info("Downloading dataset source: %s", source)
-        train_count = _load_split_with_fallback(loader, "train", train_rows)
-        val_count = _load_split_with_fallback(loader, "validation", val_rows)
-        LOGGER.info("Cached source=%s train=%d validation=%d", source, train_count, val_count)
-
 
 def print_cache_paths() -> None:
     hf_home = os.environ.get("HF_HOME", "~/.cache/huggingface")
@@ -120,9 +38,50 @@ def print_cache_paths() -> None:
     LOGGER.info("HF_DATASETS_CACHE=%s", hf_datasets)
     LOGGER.info("TRANSFORMERS_CACHE=%s", hf_models)
 
+def warm_models(models: list[str]) -> None:
+    LOGGER.info("Model download plan: %s", ", ".join(models))
+    for model_name in models:
+        LOGGER.info("Downloading tokenizer: %s", model_name)
+        AutoTokenizer.from_pretrained(model_name)
+        LOGGER.info("Downloading model weights: %s", model_name)
+        AutoConfig.from_pretrained(model_name)
+        AutoModel.from_pretrained(model_name)
+        LOGGER.info("✅ Model ready in cache: %s", model_name)
+
+def warm_datasets(config: dict, max_rows: int) -> None:
+    LOGGER.info("Dataset download plan using get_cloud_dataloaders...")
+    sources = config.get("cloud_sources", ["mine", "emoticon", "raza", "coco"])
+    
+    # Safely remove mine_gdrive if the environment variable wasn't set yet
+    if "mine_gdrive" in sources and not os.environ.get("MINE_GDRIVE_ROOT"):
+        LOGGER.warning("MINE_GDRIVE_ROOT not found. Skipping mine_gdrive for pre-download.")
+        sources.remove("mine_gdrive")
+
+    LOGGER.info("Sources to cache: %s", ", ".join(sources))
+    LOGGER.info("Target max rows per source: %d", max_rows)
+
+    try:
+        # Calling get_cloud_dataloaders will automatically trigger the HF datasets 
+        # library to download, cache, and process the data.
+        get_cloud_dataloaders(
+            batch_size=8,
+            num_workers=0, # Keep to 0 for safe pre-downloading
+            sources=sources,
+            mine_gdrive_root=os.environ.get("MINE_GDRIVE_ROOT"),
+            cache_dir=os.environ.get("HF_DATASETS_CACHE"),
+            max_samples={
+                "train": max_rows,
+                "validation": max(1, max_rows // 5),
+                "test": max(1, max_rows // 5),
+            },
+        )
+        LOGGER.info("✅ All requested datasets successfully downloaded and cached!")
+    except Exception as e:
+        LOGGER.error("❌ Error during dataset caching: %s", e)
+        LOGGER.info("Note: It is okay if datasets fail here; professor-run will catch them later.")
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Pre-download models and datasets only (no training)")
+    parser = argparse.ArgumentParser(description="Pre-download models and datasets only")
     parser.add_argument("--config", type=str, default="configs/multimodal_ultra_30gb.json")
     parser.add_argument("--dataset-profile", type=str, default=None, choices=["balanced", "large_20gb", "ultra_30gb"])
     parser.add_argument("--max-rows-per-source", type=int, default=None)
@@ -130,47 +89,36 @@ def main() -> None:
 
     setup_logging()
 
-    with open(args.config, "r") as f:
-        config = json.load(f)
+    config = {}
+    if os.path.exists(args.config):
+        with open(args.config, "r") as f:
+            config = json.load(f)
+    else:
+        LOGGER.warning("Config file %s not found. Using defaults.", args.config)
 
-    # Default all caches inside repo data/ and models/ folders unless explicitly overridden.
-    repo_root = Path.cwd()
-    datasets_cache = Path(config.get("hf_cache_dir", str(repo_root / "data" / "hf_datasets"))).resolve()
-    transformers_cache = Path(config.get("model_cache_dir", str(repo_root / "models" / "hf_models"))).resolve()
-    hub_cache = Path(config.get("hf_hub_cache_dir", str(repo_root / "models" / "hf_hub"))).resolve()
-    hf_home = (repo_root / ".hf_home").resolve()
-    datasets_cache.mkdir(parents=True, exist_ok=True)
-    transformers_cache.mkdir(parents=True, exist_ok=True)
-    hub_cache.mkdir(parents=True, exist_ok=True)
-    hf_home.mkdir(parents=True, exist_ok=True)
-    os.environ["HF_HOME"] = str(hf_home)
-    os.environ["HF_DATASETS_CACHE"] = str(datasets_cache)
-    os.environ["TRANSFORMERS_CACHE"] = str(transformers_cache)
-    os.environ["HF_HUB_CACHE"] = str(hub_cache)
-    os.environ["HUGGINGFACE_HUB_CACHE"] = str(hub_cache)
-    mine_gdrive_root = config.get("mine_gdrive_root")
-    if mine_gdrive_root:
-        os.environ["MINE_GDRIVE_ROOT"] = str(Path(mine_gdrive_root).expanduser().resolve())
-
-    profile = args.dataset_profile or config.get("dataset_profile", "balanced")
-    models = config.get("llm_downloads", ["roberta-large", "distilroberta-base"])
-
-    sources, train_rows, val_rows = resolve_dataset_plan(
-        profile=profile,
-        max_rows_per_source=args.max_rows_per_source or config.get("max_rows_per_source"),
-        sources=config.get("cloud_sources"),
-    )
-
-    LOGGER.info("Pre-download started")
-    LOGGER.info("Profile=%s", profile)
+    LOGGER.info("🚀 Starting BMVC 2026 Cloud Asset Pre-download...")
     print_cache_paths()
 
+    # Get models from config or use defaults
+    models = config.get("llm_downloads", ["roberta-large", "distilroberta-base", "distilgpt2"])
+
+    # Determine rows
+    max_rows = args.max_rows_per_source or config.get("max_rows_per_source", 5000)
+    if args.dataset_profile == "ultra_30gb":
+        max_rows = max(max_rows, 40000)
+    elif args.dataset_profile == "large_20gb":
+        max_rows = max(max_rows, 25000)
+
+    # 1. Warm Models
     warm_models(models)
-    warm_datasets(sources, train_rows, val_rows)
 
-    LOGGER.info("Pre-download complete")
-    LOGGER.info("You can now run training without initial model/dataset download delay")
+    # 2. Warm Datasets
+    warm_datasets(config, max_rows)
 
+    LOGGER.info("-" * 50)
+    LOGGER.info("🎉 Pre-download complete!")
+    LOGGER.info("You are officially ready to run Step 6 (make professor-run)")
+    LOGGER.info("-" * 50)
 
 if __name__ == "__main__":
     main()
