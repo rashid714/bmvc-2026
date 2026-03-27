@@ -6,7 +6,7 @@ Cloud-native multimodal dataset loading system.
 Features: 
   - Native Kaggle API Integration
   - Hugging Face Ecosystem with Auto-Bypass
-  - Google Drive MINE Loader
+  - Google Drive MINE Loader (Hardened Absolute Pathing)
   - Multi-Tier Fallbacks (CIFAR10, Banking77, Synthetic Generation)
   - Distributed Data Parallel (DDP) Ready
 """
@@ -47,12 +47,12 @@ if os.environ.get("DISABLE_HF_PROGRESS", "1") == "1":
 # ==============================================================================
 
 def _repo_dataset_cache_dir() -> str:
-    path = (Path.cwd() / "data" / "hf_datasets").resolve()
+    path = (Path(__file__).resolve().parent.parent / "data" / "hf_datasets").resolve()
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
 def _repo_model_cache_dir() -> str:
-    path = (Path.cwd() / "models" / "hf_models").resolve()
+    path = (Path(__file__).resolve().parent.parent / "models" / "hf_models").resolve()
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
@@ -101,7 +101,7 @@ class KaggleDownloader:
     """Utility to safely download and extract Kaggle datasets via native API."""
     @staticmethod
     def ensure_dataset(kaggle_path: str, local_folder_name: str) -> Path:
-        base_dir = Path.cwd() / "data" / "kaggle_datasets"
+        base_dir = Path(__file__).resolve().parent.parent / "data" / "kaggle_datasets"
         base_dir.mkdir(parents=True, exist_ok=True)
         target_dir = base_dir / local_folder_name
         
@@ -332,30 +332,41 @@ class MINEGoogleDriveDatasetLoader:
     """Parses local directory populated by gdown from MINE Google Drive link."""
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        root_env = os.environ.get("MINE_GDRIVE_ROOT", "data/mine_gdrive").strip()
+        # DYNAMIC ABSOLUTE PATH: Always points precisely to bmvc-2026/data/mine_gdrive/
+        default_mine_path = Path(__file__).resolve().parent.parent / "data" / "mine_gdrive"
+        root_env = os.environ.get("MINE_GDRIVE_ROOT", str(default_mine_path)).strip()
         root = Path(root_env).expanduser().resolve()
         
         if not root.exists() or not root.is_dir():
             logger.warning(f"MINE_GDRIVE_ROOT path does not exist: {root}. Ensure gdown extraction occurred.")
             return []
 
-        candidates = ["manifest.jsonl", "metadata.jsonl", "data.jsonl", "annotations.jsonl"]
+        # Check for split-specific files first, then fallback to global manifests
+        candidates = [
+            f"{split}.jsonl", f"{split}.json", 
+            "manifest.jsonl", "metadata.jsonl", "data.jsonl", "annotations.jsonl"
+        ]
+        
         records = []
+        file_found = False
         for rel in candidates:
             meta_path = root / rel
             if meta_path.exists():
+                file_found = True
+                logger.info(f"Found MINE manifest file: {meta_path}")
                 for line in meta_path.read_text(encoding="utf-8", errors="ignore").splitlines():
                     if line.strip():
                         try: records.append(json.loads(line))
                         except: pass
                 break
 
-        if not records: 
-            logger.warning(f"No valid JSONL manifest found in {root}")
+        if not file_found or not records: 
+            logger.warning(f"No valid JSON/JSONL manifest found in {root}")
             return []
 
         samples = []
         for item in records:
+            # If the JSON has a split field, verify it matches (in case of a global manifest)
             split_value = str(item.get("split", "")).lower()
             if split_value and split_value != split.lower(): 
                 continue
@@ -593,12 +604,16 @@ def get_cloud_dataloaders(
     """
     from transformers import AutoTokenizer
     
-    # 1. Establish strict cache environments
-    repo_root = Path.cwd()
+    # 1. Establish strict cache environments (Dynamic Paths)
+    repo_root = Path(__file__).resolve().parent.parent
     os.environ["HF_DATASETS_CACHE"] = str((repo_root / "data" / "hf_datasets").resolve())
     os.environ["TRANSFORMERS_CACHE"] = str((repo_root / "models" / "hf_models").resolve())
+    
+    # HARDCODE the MINE absolute path to guarantee it connects to your unzipped files
     if mine_gdrive_root: 
         os.environ["MINE_GDRIVE_ROOT"] = str(Path(mine_gdrive_root).expanduser().resolve())
+    else:
+        os.environ["MINE_GDRIVE_ROOT"] = str((repo_root / "data" / "mine_gdrive").resolve())
 
     # 2. Initialize Tokenizer
     tokenizer = AutoTokenizer.from_pretrained(
