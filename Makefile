@@ -1,4 +1,4 @@
-.PHONY: install test demo train benchmark evaluate serve clean docs help
+.PHONY: install test demo train benchmark evaluate serve clean docs help organize-paper
 
 help:
 	@echo "BEAR BMVC 2026 Research System - Makefile"
@@ -6,14 +6,14 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  make install          - Install all dependencies (Standard/T4 Optimized)"
-	@echo "  make demo            - Run Streamlit demo app"
-	@echo "  make train           - Train world-class model"
-	@echo "  make real-data       - Download real public datasets"
-	@echo "  make real-train      - Real fine-tuning on GoEmotions"
-	@echo "  make real-train-bear - Train BEAR variant on GoEmotions"
-	@echo "  make real-train-tri  - Train BEAR tri-task (emotion+intention+action)"
-	@echo "  make cloud-train     - Cloud-ready distributed BEAR tri-task training (text-only)"
-	@echo "  make cloud-test      - Test cloud checkpoint on held-out data"
+	@echo "  make demo             - Run Streamlit demo app"
+	@echo "  make train            - Train world-class model"
+	@echo "  make real-data        - Download real public datasets"
+	@echo "  make real-train       - Real fine-tuning on GoEmotions"
+	@echo "  make real-train-bear  - Train BEAR variant on GoEmotions"
+	@echo "  make real-train-tri   - Train BEAR tri-task (emotion+intention+action)"
+	@echo "  make cloud-train      - Cloud-ready distributed BEAR tri-task training (text-only)"
+	@echo "  make cloud-test       - Test cloud checkpoint on held-out data"
 	@echo ""
 	@echo "MULTIMODAL CLOUD TRAINING (NEW - BMVC 2026 MAIN):"
 	@echo "  make multimodal-smoke        - Quick test (1 epoch, 100 samples)"
@@ -50,11 +50,11 @@ help:
 	@echo "RESEARCH & PAPER GENERATION:"
 	@echo "  make ablation         - Run ablation study"
 	@echo "  make baselines        - Compare against SOTA baselines"
-	@echo "  make paper           - Generate BMVC paper draft"
-	@echo "  make research        - Run ablation + baselines + paper"
+	@echo "  make paper            - Generate BMVC paper draft"
+	@echo "  make research         - Run ablation + baselines + paper"
 	@echo ""
 	@echo "UTILITY:"
-	@echo "  make clean           - Remove artifacts"
+	@echo "  make clean            - Remove artifacts"
 	@echo ""
 
 install:
@@ -221,15 +221,19 @@ professor-run:
 	@echo "Professor one-command run (strict + reproducible)"
 	@mkdir -p data/hf_datasets models/hf_models models/hf_hub checkpoints/professor-run
 	@python -c "import torch,sys; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA devices:', torch.cuda.device_count()); sys.exit(0 if torch.cuda.is_available() else 1)" || (echo "ERROR: CUDA is not available. Install a CUDA-enabled PyTorch build and run again." && exit 1)
-	@CONFIG_PATH="configs/multimodal_cloud.json"; \
+	@if [ -z "$$MINE_GDRIVE_ROOT" ]; then \
+		export MINE_GDRIVE_ROOT="$$PWD/data/mine_gdrive"; \
+	fi; \
+	CONFIG_PATH="configs/multimodal_cloud.json"; \
 	SOURCE_LIST="mine_gdrive,mine,emoticon,raza,coco"; \
-	if [ -z "$$MINE_GDRIVE_ROOT" ] || [ ! -d "$$MINE_GDRIVE_ROOT" ]; then \
-		echo "MINE_GDRIVE_ROOT not set/found -> running without mine_gdrive source"; \
+	if [ ! -d "$$MINE_GDRIVE_ROOT" ]; then \
+		echo "⚠️  WARNING: MINE dataset not found at $$MINE_GDRIVE_ROOT"; \
+		echo "Running WITHOUT mine_gdrive source..."; \
 		python -c "import json, pathlib; cfg=json.load(open('configs/multimodal_cloud.json','r',encoding='utf-8')); cfg['cloud_sources']=[s for s in cfg.get('cloud_sources',[]) if s!='mine_gdrive']; pathlib.Path('/tmp/multimodal_cloud_nominegdrive.json').write_text(json.dumps(cfg), encoding='utf-8')"; \
 		CONFIG_PATH="/tmp/multimodal_cloud_nominegdrive.json"; \
 		SOURCE_LIST="mine,emoticon,raza,coco"; \
 	else \
-		echo "Using mine_gdrive source from MINE_GDRIVE_ROOT=$$MINE_GDRIVE_ROOT"; \
+		echo "✅ Using MINE dataset automatically from: $$MINE_GDRIVE_ROOT"; \
 	fi; \
 	export HF_DATASETS_CACHE="$$PWD/data/hf_datasets"; \
 	export TRANSFORMERS_CACHE="$$PWD/models/hf_models"; \
@@ -242,7 +246,7 @@ professor-run:
 		--report-path data/source_availability_report.json \
 		--output-json data/cloud_dataset_check.json; \
 	GPU_COUNT=$$(python -c "import torch; print(torch.cuda.device_count())"); \
-	echo "Using $$GPU_COUNT CUDA GPU(s)"; \
+	echo "🚀 Using $$GPU_COUNT CUDA GPU(s)"; \
 	if [ $$GPU_COUNT -gt 1 ]; then \
 		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_multimodal_cloud.py \
 			--config "$$CONFIG_PATH" \
@@ -258,7 +262,7 @@ professor-run:
 			--epochs 10 \
 			--output-dir checkpoints/professor-run; \
 	fi
-	@echo "Complete: checkpoints/professor-run"
+	@echo "🎉 Complete: checkpoints/professor-run"
 
 # ═══════════════════════════════════════════════════════════════════
 # AWS EC2 DEPLOYMENT TARGETS (NEW)
@@ -396,7 +400,6 @@ clean:
 
 all: install demo
 
-.PHONY: organize-paper
 organize-paper:
 	@echo "Organizing research paper data"
 	python scripts/organize_paper_data.py checkpoints/professor-run research_paper_data
