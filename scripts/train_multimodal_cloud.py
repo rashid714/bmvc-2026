@@ -9,13 +9,13 @@ Usage:
     # Single GPU
     python scripts/train_multimodal_cloud.py \
         --output-dir checkpoints/multimodal-cloud \
-        --epochs 4 --batch-size 32 --seeds 41 42 43
+        --epochs 10 --batch-size 32 --seeds 41 42 43
 
     # Multi-GPU (4 GPUs)
     torchrun --nproc_per_node 4 \
         scripts/train_multimodal_cloud.py \
         --output-dir checkpoints/multimodal-cloud \
-        --epochs 4 --batch-size 32
+        --epochs 10 --batch-size 32
 
 Author: Research Team
 Date: 2026
@@ -419,8 +419,7 @@ def run_seed(
         weight_decay=config.get("weight_decay", 0.01),
     )
     
-    total_steps = len(train_loader) * config.get("epochs", 4)
-    warmup_steps = int(0.1 * total_steps)
+    total_steps = len(train_loader) * config.get("epochs", 10)
     scheduler = LinearLR(
         optimizer,
         start_factor=0.1,
@@ -434,9 +433,12 @@ def run_seed(
         action_weight=1.0,
     )
     
-    # Training loop
+    # Early Stopping tracking
     best_val_loss = float("inf")
     best_epoch = -1
+    patience = config.get("early_stopping_patience", 2)
+    patience_counter = 0
+    
     seed_metrics = {
         "seed": seed,
         "train_losses": [],
@@ -446,7 +448,7 @@ def run_seed(
         "action_f1s": [],
     }
     
-    for epoch in range(1, config.get("epochs", 4) + 1):
+    for epoch in range(1, config.get("epochs", 10) + 1):
         train_loss = train_one_epoch(
             model=model,
             train_loader=train_loader,
@@ -473,9 +475,11 @@ def run_seed(
         seed_metrics["intention_f1s"].append(metrics["intention_micro_f1"])
         seed_metrics["action_f1s"].append(metrics["action_micro_f1"])
         
+        # Early Stopping Logic
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             best_epoch = epoch
+            patience_counter = 0  # Reset patience if we improved
             
             # Save best model
             if rank == 0:
@@ -485,19 +489,38 @@ def run_seed(
                     seed_dir / "best_model.pt",
                 )
                 logger.info(f"Saved best model at epoch {epoch}")
+        else:
+            patience_counter += 1
+            if rank == 0:
+                logger.info(f"EarlyStopping counter: {patience_counter} out of {patience}")
+            if patience_counter >= patience:
+                if rank == 0:
+                    logger.info("🛑 Early stopping triggered! Model has stopped improving.")
+                break
         
         if rank == 0:
             logger.info(f"\n[seed={seed}] epoch={epoch}/{config['epochs']} "
                        f"train_loss={train_loss:.4f} val_loss={val_loss:.4f}\n")
     
+    # -----------------------------------------------------------------
+    # BUG FIX: Load the Best Weights before Final Test Evaluation
+    # -----------------------------------------------------------------
+    best_model_path = seed_dir / "best_model.pt"
+    if best_model_path.exists():
+        if rank == 0:
+            logger.info(f"\nLoading best model weights (from epoch {best_epoch}) for final test evaluation...")
+        model_to_load = model.module if isinstance(model, DDP) else model
+        model_to_load.load_state_dict(torch.load(best_model_path, map_location=device))
+    # -----------------------------------------------------------------
+
     # Test set evaluation
     logger.info(f"\nEvaluating on test set...")
     test_loss, test_metrics = evaluate_one_epoch(
         model=model,
-        val_loader=test_loader,  # Use test_loader for final evaluation
+        val_loader=test_loader,
         criterion=criterion,
         device=device,
-        epoch=config.get("epochs", 4),
+        epoch=best_epoch if best_epoch != -1 else config.get("epochs", 10),
     )
     
     seed_metrics["test_loss"] = test_loss
@@ -511,7 +534,7 @@ def run_seed(
         with open(seed_dir / "metrics.json", "w") as f:
             json.dump(seed_metrics, f, indent=2)
         
-        logger.info(f"\n[seed={seed}] FINAL TEST RESULTS:")
+        logger.info(f"\n[seed={seed}] FINAL TEST RESULTS (From best epoch {best_epoch}):")
         logger.info(f"  Test Emotion Accuracy: {test_metrics['emotion_accuracy']:.4f}")
         logger.info(f"  Test Intention F1: {test_metrics['intention_micro_f1']:.4f}")
         logger.info(f"  Test Action F1: {test_metrics['action_micro_f1']:.4f}")
@@ -614,7 +637,7 @@ def main():
         config["fp16"] = True
     
     # Set defaults
-    config.setdefault("epochs", 4)
+    config.setdefault("epochs", 10)
     config.setdefault("batch_size", 16)
     config.setdefault("seeds", [41, 42, 43])
     config.setdefault("learning_rate", 2e-5)
@@ -626,6 +649,7 @@ def main():
     config.setdefault("hidden_dim", 768)
     config.setdefault("cloud_sources", ["mine", "emoticon", "raza"])
     config.setdefault("strict_preflight", True)
+    config.setdefault("early_stopping_patience", 2)
 
     if args.strict_preflight:
         config["strict_preflight"] = True
