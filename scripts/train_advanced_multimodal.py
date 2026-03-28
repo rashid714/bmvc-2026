@@ -98,10 +98,13 @@ def log_download_plan(logger, config):
 # TRAINING FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════════════
 
-def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch):
-    """Train one epoch."""
+def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch, fp16=True):
+    """Train one epoch with memory-safe Mixed Precision."""
     model.train()
     total_loss = 0.0
+    
+    # 1. Initialize the gradient scaler for FP16
+    scaler = torch.amp.GradScaler('cuda') if fp16 else None
     
     for batch_idx, batch in enumerate(train_loader):
         input_ids = batch["input_ids"].to(device)
@@ -122,31 +125,57 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device
         if video_features is not None:
             video_features = video_features.to(device)
         
-        # Forward pass
-        model_output = model(
-            input_ids, attention_mask,
-            image_features=image_features,
-            audio_features=audio_features,
-            video_features=video_features
-        )
-        
-        # Compute loss
-        loss_dict = criterion(
-            emotion_logits=model_output["emotion_logits"],
-            intention_logits=model_output["intention_logits"],
-            action_logits=model_output["action_logits"],
-            emotion_labels=emotion_labels,
-            intention_labels=intention_labels,
-            action_labels=action_labels,
-        )
-        loss = loss_dict["total_loss"]
-        
-        # Backward
         optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        scheduler.step()
+
+        # 2. Run forward pass in Autocast (Half-precision)
+        if fp16:
+            with torch.amp.autocast('cuda'):
+                model_output = model(
+                    input_ids, attention_mask,
+                    image_features=image_features,
+                    audio_features=audio_features,
+                    video_features=video_features
+                )
+                loss_dict = criterion(
+                    emotion_logits=model_output["emotion_logits"],
+                    intention_logits=model_output["intention_logits"],
+                    action_logits=model_output["action_logits"],
+                    emotion_labels=emotion_labels,
+                    intention_labels=intention_labels,
+                    action_labels=action_labels,
+                )
+                loss = loss_dict["total_loss"]
+            
+            # 3. Scaled Backward Pass
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+
+        else:
+            # Fallback to standard 32-bit float
+            model_output = model(
+                input_ids, attention_mask,
+                image_features=image_features,
+                audio_features=audio_features,
+                video_features=video_features
+            )
+            loss_dict = criterion(
+                emotion_logits=model_output["emotion_logits"],
+                intention_logits=model_output["intention_logits"],
+                action_logits=model_output["action_logits"],
+                emotion_labels=emotion_labels,
+                intention_labels=intention_labels,
+                action_labels=action_labels,
+            )
+            loss = loss_dict["total_loss"]
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
         
         total_loss += loss.item()
         
@@ -290,7 +319,7 @@ def run_seed(seed, config, output_dir, rank, world_size, device, logger):
     for epoch in range(config.get("epochs", 4)):
         # Train
         train_loss = train_one_epoch(
-            model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch+1
+            model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch+1, fp16=config.get("fp16", True)
         )
         
         # Validate
