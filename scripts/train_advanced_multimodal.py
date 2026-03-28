@@ -2,7 +2,7 @@
 """
 BMVC 2026 - Advanced Multimodal Training
 Fully Automated: No Code Needed
-Uses Dual-Layer LLM + Automatic PDF Report Generation
+Uses Dual-Layer LLM + ResNet50 Vision + Automatic PDF Report Generation
 """
 
 import os
@@ -99,7 +99,7 @@ def log_download_plan(logger, config):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch, fp16=True):
-    """Train one epoch with memory-safe Mixed Precision."""
+    """Train one epoch with memory-safe Mixed Precision and Vision Integration."""
     model.train()
     total_loss = 0.0
     
@@ -113,29 +113,16 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device
         intention_labels = batch["intention_labels"].to(device)
         action_labels = batch["action_labels"].to(device)
         
-        # Optional multimodal features
-        image_features = batch.get("image_features", None)
-        audio_features = batch.get("audio_features", None)
-        video_features = batch.get("video_features", None)
-        
-        if image_features is not None:
-            image_features = image_features.to(device)
-        if audio_features is not None:
-            audio_features = audio_features.to(device)
-        if video_features is not None:
-            video_features = video_features.to(device)
+        # 🌟 NEW: Fetching the raw images!
+        images = batch.get("images", None)
+        if images is not None: images = images.to(device)
         
         optimizer.zero_grad()
 
         # 2. Run forward pass in Autocast (Half-precision)
         if fp16:
             with torch.amp.autocast('cuda'):
-                model_output = model(
-                    input_ids, attention_mask,
-                    image_features=image_features,
-                    audio_features=audio_features,
-                    video_features=video_features
-                )
+                model_output = model(input_ids, attention_mask, images=images)
                 loss_dict = criterion(
                     emotion_logits=model_output["emotion_logits"],
                     intention_logits=model_output["intention_logits"],
@@ -156,12 +143,7 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device
 
         else:
             # Fallback to standard 32-bit float
-            model_output = model(
-                input_ids, attention_mask,
-                image_features=image_features,
-                audio_features=audio_features,
-                video_features=video_features
-            )
+            model_output = model(input_ids, attention_mask, images=images)
             loss_dict = criterion(
                 emotion_logits=model_output["emotion_logits"],
                 intention_logits=model_output["intention_logits"],
@@ -204,24 +186,12 @@ def evaluate_one_epoch(model, val_loader, device, rank, logger):
             intention_labels = batch["intention_labels"].to(device)
             action_labels = batch["action_labels"].to(device)
             
-            image_features = batch.get("image_features", None)
-            audio_features = batch.get("audio_features", None)
-            video_features = batch.get("video_features", None)
-            
-            if image_features is not None:
-                image_features = image_features.to(device)
-            if audio_features is not None:
-                audio_features = audio_features.to(device)
-            if video_features is not None:
-                video_features = video_features.to(device)
+            # 🌟 Fetching the raw images!
+            images = batch.get("images", None)
+            if images is not None: images = images.to(device)
             
             # Forward pass
-            model_output = model(
-                input_ids, attention_mask,
-                image_features=image_features,
-                audio_features=audio_features,
-                video_features=video_features
-            )
+            model_output = model(input_ids, attention_mask, images=images)
             
             # Get predictions
             emotion_preds = torch.argmax(model_output["emotion_logits"], dim=1)
