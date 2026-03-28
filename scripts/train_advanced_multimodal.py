@@ -28,7 +28,6 @@ from transformers import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 import numpy as np
-from sklearn.metrics import accuracy_score, f1_score
 
 # Import advanced model
 from models.advanced_multimodal_bear import AdvancedBEARModel
@@ -194,19 +193,21 @@ def evaluate_one_epoch(model, val_loader, device, rank, logger):
             intention_preds = (torch.sigmoid(model_output["intention_logits"]) > 0.5).long()
             action_preds = (torch.sigmoid(model_output["action_logits"]) > 0.5).long()
             
-            all_emotion_preds.append(emotion_preds.cpu().numpy())
-            all_emotion_labels.append(emotion_labels.cpu().numpy())
-            all_intention_preds.append(intention_preds.cpu().numpy())
-            all_intention_labels.append(intention_labels.cpu().numpy())
-            all_action_preds.append(action_preds.cpu().numpy())
-            all_action_labels.append(action_labels.cpu().numpy())
+            # 🌟 CRITICAL FIX: Keeping them as PyTorch Tensors for eval.py
+            all_emotion_preds.append(emotion_preds)
+            all_emotion_labels.append(emotion_labels)
+            all_intention_preds.append(intention_preds)
+            all_intention_labels.append(intention_labels)
+            all_action_preds.append(action_preds)
+            all_action_labels.append(action_labels)
     
-    emotion_preds = np.concatenate(all_emotion_preds)
-    emotion_labels = np.concatenate(all_emotion_labels)
-    intention_preds = np.concatenate(all_intention_preds)
-    intention_labels = np.concatenate(all_intention_labels)
-    action_preds = np.concatenate(all_action_preds)
-    action_labels = np.concatenate(all_action_labels)
+    # 🌟 CRITICAL FIX: Concatenating Tensors instead of Numpy Arrays
+    emotion_preds = torch.cat(all_emotion_preds, dim=0)
+    emotion_labels = torch.cat(all_emotion_labels, dim=0)
+    intention_preds = torch.cat(all_intention_preds, dim=0)
+    intention_labels = torch.cat(all_intention_labels, dim=0)
+    action_preds = torch.cat(all_action_preds, dim=0)
+    action_labels = torch.cat(all_action_labels, dim=0)
     
     metrics = evaluate_tritask(
         emotion_preds, emotion_labels,
