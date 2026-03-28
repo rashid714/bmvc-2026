@@ -1,17 +1,48 @@
-#!/usr/bin/env python3#!/usr/bin/env python3TaskLoss
+#!/usr/bin/env python3
+"""
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+import json
+import logging
+import argparse
+from pathlib import Path
+from typing import Dict, Any, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import numpy as np
+import torch
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.optim import AdamW
+from transformers import get_linear_schedule_with_warmup
+from transformers import logging as hf_logging
+
+# Silence noisy HF warnings
+hf_logging.set_verbosity_error()
+
+from models.advanced_multimodal_bear import AdvancedBEARModel
+from training.losses import MultiTaskLoss
+from training.eval import evaluate_tritask
 from data.cloud_datasets import get_cloud_dataloaders
 from training.pdf_report_generator import (
     generate_research_report_pdf,
     generate_raw_data_export,
 )
 
-
 # =============================================================================
 # Setup helpers
 # =============================================================================
 
 def setup_distributed() -> Tuple[int, int, int, torch.device]:
-    """Initialize distributed training if launched with torchrun."""
+    """
+    Initialize distributed training if launched with torchrun.
+    Returns: rank, world_size, local_rank, device
+    """
     if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
@@ -34,7 +65,9 @@ def setup_distributed() -> Tuple[int, int, int, torch.device]:
 
 
 def setup_logging(rank: int, output_dir: str) -> logging.Logger:
-    """Configure logger without duplicating handlers."""
+    """
+    Setup logging and avoid duplicate handlers.
+    """
     log_path = Path(output_dir) / "training.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -42,7 +75,6 @@ def setup_logging(rank: int, output_dir: str) -> logging.Logger:
     logger.setLevel(logging.INFO if rank == 0 else logging.WARNING)
     logger.propagate = False
 
-    # Clear existing handlers to avoid duplicates in notebooks/re-runs
     if logger.handlers:
         logger.handlers.clear()
 
@@ -63,19 +95,24 @@ def setup_logging(rank: int, output_dir: str) -> logging.Logger:
     return logger
 
 
-def apply_runtime_env_from_config(config: Dict[str, Any], logger: Optional[logging.Logger] = None) -> None:
-    """Push important path config into environment for loaders/HF cache."""
+def apply_runtime_env_from_config(config: Dict[str, Any], logger: logging.Logger | None = None) -> None:
+    """
+    Push important config paths into environment so loaders can use them.
+    """
     if config.get("hf_cache_dir"):
         os.environ["HF_DATASETS_CACHE"] = str(config["hf_cache_dir"])
     if config.get("model_cache_dir"):
         os.environ["TRANSFORMERS_CACHE"] = str(config["model_cache_dir"])
     if config.get("mine_gdrive_root"):
         os.environ["MINE_GDRIVE_ROOT"] = str(config["mine_gdrive_root"])
+    if config.get("hf_home"):
+        os.environ["HF_HOME"] = str(config["hf_home"])
 
     if logger is not None:
         logger.info("HF_DATASETS_CACHE=%s", os.environ.get("HF_DATASETS_CACHE", ""))
         logger.info("TRANSFORMERS_CACHE=%s", os.environ.get("TRANSFORMERS_CACHE", ""))
         logger.info("MINE_GDRIVE_ROOT=%s", os.environ.get("MINE_GDRIVE_ROOT", ""))
+        logger.info("HF_HOME=%s", os.environ.get("HF_HOME", ""))
 
 
 def log_download_plan(logger: logging.Logger, config: Dict[str, Any]) -> None:
@@ -100,15 +137,15 @@ def log_download_plan(logger: logging.Logger, config: Dict[str, Any]) -> None:
 def train_one_epoch(
     model,
     train_loader,
-    criterion: MultiTaskLoss,
+    criterion,
     optimizer,
     scheduler,
-    device: torch.device,
-    rank: int,
-    logger: logging.Logger,
-    epoch: int,
-    fp16: bool = True,
-) -> float:
+    device,
+    rank,
+    logger,
+    epoch,
+    fp16=True,
+):
     model.train()
     total_loss = 0.0
 
@@ -121,6 +158,7 @@ def train_one_epoch(
         emotion_labels = batch["emotion_labels"].to(device, non_blocking=True)
         intention_labels = batch["intention_labels"].to(device, non_blocking=True)
         action_labels = batch["action_labels"].to(device, non_blocking=True)
+
         images = batch.get("images")
         if images is not None:
             images = images.to(device, non_blocking=True)
@@ -181,14 +219,13 @@ def train_one_epoch(
 def evaluate_one_epoch(
     model,
     data_loader,
-    criterion: MultiTaskLoss,
-    device: torch.device,
-    rank: int,
-    logger: logging.Logger,
-    split_name: str = "Validation",
-) -> Tuple[float, Dict[str, float]]:
+    criterion,
+    device,
+    rank,
+    logger,
+    split_name="Validation",
+):
     model.eval()
-
     total_loss = 0.0
     num_batches = 0
 
@@ -205,6 +242,7 @@ def evaluate_one_epoch(
         emotion_labels = batch["emotion_labels"].to(device, non_blocking=True)
         intention_labels = batch["intention_labels"].to(device, non_blocking=True)
         action_labels = batch["action_labels"].to(device, non_blocking=True)
+
         images = batch.get("images")
         if images is not None:
             images = images.to(device, non_blocking=True)
@@ -264,16 +302,7 @@ def evaluate_one_epoch(
 # Main training loop
 # =============================================================================
 
-def run_seed(
-    seed: int,
-    config: Dict[str, Any],
-    output_dir: str,
-    rank: int,
-    world_size: int,
-    local_rank: int,
-    device: torch.device,
-    logger: logging.Logger,
-):
+def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, logger):
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
@@ -281,10 +310,9 @@ def run_seed(
 
     seed_dir = Path(output_dir) / f"seed_{seed}"
     seed_dir.mkdir(parents=True, exist_ok=True)
-
     logger.info("[Seed %s] Starting training...", seed)
 
-    # Push config paths into env so cloud_datasets.py can pick them up.
+    # Make sure runtime env paths are visible to downstream loaders
     apply_runtime_env_from_config(config, logger)
 
     train_loader, val_loader, test_loader = get_cloud_dataloaders(
@@ -310,7 +338,6 @@ def run_seed(
         emotion_weight=config.get("emotion_weight", 1.0),
         intention_weight=config.get("intention_weight", 1.2),
         action_weight=config.get("action_weight", 1.0),
-        use_focal=config.get("use_focal", True),
     )
 
     optimizer = AdamW(
@@ -332,26 +359,26 @@ def run_seed(
 
     for epoch in range(1, config.get("epochs", 4) + 1):
         train_loss = train_one_epoch(
-            model=model,
-            train_loader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            device=device,
-            rank=rank,
-            logger=logger,
-            epoch=epoch,
-            fp16=config.get("fp16", True),
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            scheduler,
+            device,
+            rank,
+            logger,
+            epoch,
+            config.get("fp16", True),
         )
 
         val_loss, val_metrics = evaluate_one_epoch(
-            model=model,
-            data_loader=val_loader,
-            criterion=criterion,
-            device=device,
-            rank=rank,
-            logger=logger,
-            split_name="Validation",
+            model,
+            val_loader,
+            criterion,
+            device,
+            rank,
+            logger,
+            "Validation",
         )
 
         if rank == 0:
@@ -363,16 +390,22 @@ def run_seed(
                     **{k: float(v) for k, v in val_metrics.items()},
                 }
             )
-
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 best_epoch = epoch
                 checkpoint_path = seed_dir / "best_model.pt"
                 model_to_save = model.module if isinstance(model, DDP) else model
                 torch.save(model_to_save.state_dict(), checkpoint_path)
-                logger.info("[Seed %s] Saved best model at epoch %d (val_loss=%.4f)", seed, epoch, val_loss)
+                logger.info(
+                    "[Seed %s] Saved best model at epoch %d (val_loss=%.4f)",
+                    seed,
+                    epoch,
+                    val_loss,
+                )
 
-    # Load best model before final test
+    # -------------------------------------------------------------------------
+    # IMPORTANT FIX: reload the best checkpoint before final test evaluation
+    # -------------------------------------------------------------------------
     checkpoint_path = seed_dir / "best_model.pt"
     if checkpoint_path.exists():
         model_to_load = model.module if isinstance(model, DDP) else model
@@ -382,13 +415,13 @@ def run_seed(
             logger.info("[Seed %s] Loaded best checkpoint from epoch %d for final test.", seed, best_epoch)
 
     test_loss, test_metrics = evaluate_one_epoch(
-        model=model,
-        data_loader=test_loader,
-        criterion=criterion,
-        device=device,
-        rank=rank,
-        logger=logger,
-        split_name="Test",
+        model,
+        test_loader,
+        criterion,
+        device,
+        rank,
+        logger,
+        "Test",
     )
 
     if rank == 0:
@@ -415,7 +448,7 @@ def run_seed(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="BMVC 2026 Advanced Multimodal Training")
+    parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, default="configs/multimodal_cloud.json")
     parser.add_argument("--output-dir", type=str, default="checkpoints/results-final")
     parser.add_argument("--epochs", type=int, default=None)
@@ -471,18 +504,8 @@ def main() -> None:
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
         log_download_plan(logger, config)
 
-    all_seed_metrics = {}
     for seed in config.get("seeds", [41, 42, 43]):
-        all_seed_metrics[seed] = run_seed(
-            seed=seed,
-            config=config,
-            output_dir=args.output_dir,
-            rank=rank,
-            world_size=world_size,
-            local_rank=local_rank,
-            device=device,
-            logger=logger,
-        )
+        run_seed(seed, config, args.output_dir, rank, world_size, local_rank, device, logger)
 
     if rank == 0:
         logger.info("╔════════════════════════════════════════════════════════════════════╗")
@@ -513,34 +536,28 @@ def main() -> None:
         with open(summary_path, "w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
+        logger.info("FINAL RESULTS:")
         logger.info(
-            "FINAL RESULTS (Mean ± Std across %d seeds):",
-            len(config.get("seeds", [])),
-        )
-        logger.info(
-            " Test Emotion Accuracy: %.4f ± %.4f",
+            " Emotion Acc: %.4f ± %.4f",
             summary["test_emotion_accuracy_mean"],
             summary["test_emotion_accuracy_std"],
         )
         logger.info(
-            " Test Intention F1: %.4f ± %.4f",
+            " Intention F1: %.4f ± %.4f",
             summary["test_intention_f1_mean"],
             summary["test_intention_f1_std"],
         )
         logger.info(
-            " Test Action F1: %.4f ± %.4f",
+            " Action F1: %.4f ± %.4f",
             summary["test_action_f1_mean"],
             summary["test_action_f1_std"],
         )
 
         try:
-            pdf_path = generate_research_report_pdf(args.output_dir, str(summary_path), args.config)
-            csv_path, latex_path = generate_raw_data_export(args.output_dir, str(summary_path))
-            logger.info("PDF Report Generated: %s", pdf_path)
-            logger.info("CSV Export Generated: %s", csv_path)
-            logger.info("LaTeX Export Generated: %s", latex_path)
-        except Exception as e:
-            logger.warning("PDF/report export skipped: %s", e)
+            generate_research_report_pdf(args.output_dir, str(summary_path), args.config)
+            generate_raw_data_export(args.output_dir, str(summary_path))
+        except Exception:
+            pass
 
         try:
             sys.path.insert(0, str(Path(__file__).parent))
@@ -548,9 +565,8 @@ def main() -> None:
 
             paper_output = Path(args.output_dir).parent / "research_paper_data"
             create_research_paper_folder(args.output_dir, str(paper_output))
-            logger.info("Research paper folder ready: %s", paper_output)
-        except Exception as e:
-            logger.warning("Paper folder organization skipped: %s", e)
+        except Exception:
+            pass
 
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
@@ -559,40 +575,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-"""
-BMVC 2026 - Advanced Multimodal Training (Corrected)
 
-Key fixes:
-- Uses LOCAL_RANK safely for DDP
-- Avoids duplicate log handlers
-- Uses AMP only when running on CUDA with fp16 enabled
-- Evaluates validation loss and saves best checkpoint based on validation loss
-- Propagates cache/MINE/data_dir settings via environment variables and loader args
-- Removes trailing comma after main()
-"""
-
-from __future__ import annotations
-
-import argparse
-import json
-import logging
-import os
-import sys
-from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import numpy as np
-import torch
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.optim import AdamW
-from transformers import get_linear_schedule_with_warmup
-from transformers import logging as hf_logging
-
-# Silence noisy HF warnings
-hf_logging.set_verbosity_error()
-
-from models.advanced_multimodal_bear import AdvancedBEARModel
-from training.eval import evaluate_tritask
