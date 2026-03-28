@@ -248,16 +248,14 @@ professor-run:
 	GPU_COUNT=$$(python -c "import torch; print(torch.cuda.device_count())"); \
 	echo "🚀 Using $$GPU_COUNT CUDA GPU(s)"; \
 	if [ $$GPU_COUNT -gt 1 ]; then \
-		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_multimodal_cloud.py \
+		torchrun --nproc_per_node=$$GPU_COUNT scripts/train_advanced_multimodal.py \
 			--config "$$CONFIG_PATH" \
-			--strict-preflight \
 			--batch-size 8 \
 			--epochs 10 \
 			--output-dir checkpoints/professor-run; \
 	else \
-		python scripts/train_multimodal_cloud.py \
+		python scripts/train_advanced_multimodal.py \
 			--config "$$CONFIG_PATH" \
-			--strict-preflight \
 			--batch-size 8 \
 			--epochs 10 \
 			--output-dir checkpoints/professor-run; \
