@@ -17,9 +17,9 @@ PROFESSOR_OUTPUT_DIR ?= checkpoints/professor-run
 BEST_OUTPUT_DIR ?= checkpoints/advanced-best-ultra
 
 BATCH_SIZE ?= 8
-EPOCHS ?= 4
-NUM_WORKERS ?= 2
-MAX_ROWS ?= 2000
+EPOCHS ?= 10
+NUM_WORKERS ?= 4
+MAX_ROWS ?= 5000
 SEEDS ?= 41 42 43
 
 HF_DATASETS_CACHE ?= $(PWD)/data/hf_datasets
@@ -140,7 +140,7 @@ advanced-multi-gpu:
 		--epochs $(EPOCHS) \
 		--batch-size $(BATCH_SIZE) \
 		--max-rows-per-source $(MAX_ROWS) \
-		--num-workers 4 \
+		--num-workers $(NUM_WORKERS) \
 		--seeds $(SEEDS)
 
 .PHONY: advanced-cloud
@@ -183,7 +183,7 @@ advanced-best:
 			--epochs 5 \
 			--batch-size 8 \
 			--max-rows-per-source 40000 \
-			--num-workers 4 \
+			--num-workers $(NUM_WORKERS) \
 			--seeds $(SEEDS); \
 	else \
 		$(export_cache_env) \
@@ -194,7 +194,7 @@ advanced-best:
 			--epochs 5 \
 			--batch-size 8 \
 			--max-rows-per-source 30000 \
-			--num-workers 2 \
+			--num-workers $(NUM_WORKERS) \
 			--seeds $(SEEDS); \
 	fi
 	@echo "Advanced best run complete."
