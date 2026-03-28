@@ -1,11 +1,12 @@
 """
 Advanced Top-Tier Multimodal BEAR Model (BMVC 2026)
-Dual-Layer LLM Architecture with Maximum Model Capacity
+Dual-Layer LLM Architecture with Maximum Model Capacity + ResNet50 Vision
 """
 
 import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
+import torchvision.models as models
 import torch.nn.functional as F
 
 
@@ -171,7 +172,6 @@ class AdvancedLLMBackbone(nn.Module):
         self.roberta_proj = nn.Linear(1024, hidden_dim)
         
         # Layer 2: DistilRoBERTa-base (82M params)
-        # Keeps tokenizer compatibility with RoBERTa family token IDs.
         self.distilroberta = AutoModel.from_pretrained("distilroberta-base")
         self.distilroberta_proj = nn.Linear(768, hidden_dim)
         
@@ -271,7 +271,7 @@ class AdvancedTriTaskHead(nn.Module):
 class AdvancedBEARModel(nn.Module):
     """
     Advanced Top-Tier Multimodal BEAR Model
-    Combines dual-layer LLM + 4 modality encoders + dual-layer attention
+    Combines dual-layer LLM + ResNet50 Vision + dual-layer attention
     """
     def __init__(self, hidden_dim=1024):
         super().__init__()
@@ -281,7 +281,11 @@ class AdvancedBEARModel(nn.Module):
         self.text_backbone = AdvancedLLMBackbone(hidden_dim)
         self.text_encoder = AdvancedModalityEncoder(hidden_dim, hidden_dim)
         
-        # Vision: Image encoder
+        # 🌟 NEW: ResNet50 Vision Model (Frozen to prevent OOM)
+        resnet = models.resnet50(pretrained=True)
+        for param in resnet.parameters():
+            param.requires_grad = False
+        self.vision_backbone = nn.Sequential(*list(resnet.children())[:-1]) # Outputs [batch, 2048, 1, 1]
         self.image_encoder = AdvancedModalityEncoder(2048, hidden_dim)
         
         # Audio: Audio encoder
@@ -302,18 +306,8 @@ class AdvancedBEARModel(nn.Module):
         # Calibration
         self.temperature = nn.Parameter(torch.ones(1))
     
-    def forward(self, input_ids, attention_mask, image_features=None, audio_features=None, video_features=None):
-        """
-        Args:
-            input_ids: [batch, seq_len]
-            attention_mask: [batch, seq_len]
-            image_features: [batch, 2048] or None
-            audio_features: [batch, 512] or None
-            video_features: [batch, 1024] or None
-        
-        Returns:
-            Dict with emotion/intention/action logits
-        """
+    # 🌟 CRITICAL FIX: forward() now accepts `images`
+    def forward(self, input_ids, attention_mask, images=None, audio_features=None, video_features=None):
         device = input_ids.device
         batch_size = input_ids.size(0)
         
@@ -327,9 +321,12 @@ class AdvancedBEARModel(nn.Module):
         # Initialize modality embeddings
         modalities = [text_embed]
         
-        # Image
-        if image_features is not None:
-            image_embed = self.image_encoder(image_features)
+        # 🌟 REAL Vision Processing
+        if images is not None and torch.sum(torch.abs(images)) > 0:
+            with torch.no_grad():
+                img_feats = self.vision_backbone(images).squeeze(-1).squeeze(-1) # [batch, 2048]
+                if img_feats.dim() == 1: img_feats = img_feats.unsqueeze(0)
+            image_embed = self.image_encoder(img_feats)
             modalities.append(image_embed)
         else:
             modalities.append(torch.zeros(batch_size, self.hidden_dim, device=device))
