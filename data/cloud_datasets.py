@@ -4,7 +4,7 @@ BEAR BMVC 2026 - MASTER CLOUD DATASET ARCHITECTURE
 =========================================================================================
 Cloud-native multimodal dataset loading system.
 Features: 
-  - Native Kaggle API Integration
+  - TSV/CSV Auto-Detection (Kaggle GoEmotions Fix)
   - REAL Image Loading via PIL and Torchvision Transforms
   - Google Drive MINE Loader
   - Universal Legacy Translator for old JSON configs
@@ -51,11 +51,6 @@ def _repo_dataset_cache_dir() -> str:
     path.mkdir(parents=True, exist_ok=True)
     return str(path)
 
-def _repo_model_cache_dir() -> str:
-    path = (Path(__file__).resolve().parent.parent / "models" / "hf_models").resolve()
-    path.mkdir(parents=True, exist_ok=True)
-    return str(path)
-
 def _hf_load_dataset(*args, **kwargs):
     kwargs.setdefault("cache_dir", _repo_dataset_cache_dir())
     kwargs.setdefault("trust_remote_code", True)
@@ -79,16 +74,15 @@ class MultimodalSample:
             self.intention_labels = [0]
         if not self.action_labels:
             self.action_labels = [0]
-        if not self.modality_available:
-            self.modality_available = {
-                "text": bool(self.text and str(self.text).strip() != ""),
-                "image": bool(self.image_path),
-                "audio": bool(self.audio_path),
-                "video": bool(self.video_path),
-            }
+        self.modality_available = {
+            "text": bool(self.text and str(self.text).strip() != ""),
+            "image": bool(self.image_path),
+            "audio": bool(self.audio_path),
+            "video": bool(self.video_path),
+        }
 
 # ==============================================================================
-# 2. KAGGLE NATIVE SUBSYSTEM
+# 2. KAGGLE NATIVE SUBSYSTEM (WITH TSV AUTO-DETECTION)
 # ==============================================================================
 
 class KaggleDownloader:
@@ -98,6 +92,7 @@ class KaggleDownloader:
         base_dir.mkdir(parents=True, exist_ok=True)
         target_dir = base_dir / local_folder_name
         
+        # If directory is empty or doesn't exist, try download
         if not target_dir.exists() or not any(target_dir.iterdir()):
             logger.info(f"Initiating Kaggle download for: {kaggle_path}...")
             try:
@@ -106,9 +101,8 @@ class KaggleDownloader:
                     "-p", str(target_dir), "--unzip"
                 ], check=True, capture_output=True)
                 logger.info(f"Successfully downloaded & extracted {kaggle_path} to {target_dir}")
-            except subprocess.CalledProcessError as e:
-                logger.error(f"Kaggle download failed for {kaggle_path}.")
-                raise RuntimeError("Kaggle API Authentication Error")
+            except Exception as e:
+                logger.warning(f"Kaggle download failed or API key missing. Checking local path {target_dir}...")
         return target_dir
 
 class KaggleGoEmotionsLoader:
@@ -116,11 +110,26 @@ class KaggleGoEmotionsLoader:
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
             target_dir = KaggleDownloader.ensure_dataset("rkibria/goemotions-kaggle", "goemotions")
-            csv_map = {"train": "train.csv", "validation": "val.csv", "test": "test.csv"}
-            file_path = target_dir / csv_map.get(split, "train.csv")
-            if not file_path.exists(): return []
             
-            df = pd.read_csv(file_path)
+            # 🌟 TSV/CSV Auto-Detection Logic
+            file_names = {
+                "train": ["train.tsv", "train.csv"],
+                "validation": ["val.tsv", "val.csv", "validation.tsv", "validation.csv"],
+                "test": ["test.tsv", "test.csv"]
+            }
+            
+            df = None
+            found_path = None
+            for fname in file_names.get(split, []):
+                potential_path = target_dir / fname
+                if potential_path.exists():
+                    found_path = potential_path
+                    sep = '\t' if fname.endswith('.tsv') else ','
+                    df = pd.read_csv(potential_path, sep=sep)
+                    logger.info(f"Loaded GoEmotions {split} from {fname}")
+                    break
+            
+            if df is None: return []
             if limit: df = df.head(limit)
             
             samples = []
@@ -133,7 +142,9 @@ class KaggleGoEmotionsLoader:
                     intention_labels=[(primary_label * 2) % 20], action_labels=[(primary_label * 3) % 15], source_dataset="Kaggle_GoEmotions"
                 ))
             return samples
-        except Exception as e: return []
+        except Exception as e:
+            logger.error(f"GoEmotions error: {e}")
+            return []
 
 class KaggleFacialEmotionLoader:
     @staticmethod
@@ -190,7 +201,8 @@ class DairAiEmotionLoader:
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
         try:
-            dataset = _hf_load_dataset(DairAiEmotionLoader.HF_ID, "unsplit", split=split)
+            # Dair-ai split "validation" is "validation", not "val"
+            dataset = _hf_load_dataset(DairAiEmotionLoader.HF_ID, split=split)
             if limit: dataset = dataset.select(range(min(limit, len(dataset))))
             samples = []
             for item in dataset:
@@ -235,7 +247,8 @@ class MSCOCOCaptionsLoader:
 class MINEGoogleDriveDatasetLoader:
     @staticmethod
     def load_split(split: str = "train", limit: int = None) -> list[MultimodalSample]:
-        default_mine_path = Path(__file__).resolve().parent.parent / "data" / "mine_gdrive"
+        repo_root = Path(__file__).resolve().parent.parent
+        default_mine_path = repo_root / "data" / "mine_gdrive"
         root_env = os.environ.get("MINE_GDRIVE_ROOT", str(default_mine_path)).strip()
         root = Path(root_env).expanduser().resolve()
         if not root.exists() or not root.is_dir(): return []
@@ -262,7 +275,6 @@ class MINEGoogleDriveDatasetLoader:
             raw_action = item.get("action_labels", item.get("action", [0]))
             action_labels = [int(x) for x in raw_action] if isinstance(raw_action, list) else [int(raw_action)]
 
-            # Absolute image path resolution for MINE
             raw_img_path = item.get("image_path") or item.get("image")
             final_img_path = None
             if raw_img_path:
@@ -298,7 +310,7 @@ class SyntheticMultimodalGenerator:
 # ==============================================================================
 
 class UnifiedCloudDatasetBuilder:
-    # UNIVERSAL REGISTRY: Automatically translates old JSON config names!
+    # UNIVERSAL REGISTRY: Automatically translates config names
     REGISTRY = {
         "kaggle_goemotions": KaggleGoEmotionsLoader, "kaggle_facial": KaggleFacialEmotionLoader, "kaggle_intent": KaggleIntentLoader,
         "hf_emotion": DairAiEmotionLoader, "hf_dailydialog": DailyDialogLoader, "hf_coco": MSCOCOCaptionsLoader, "mine_gdrive": MINEGoogleDriveDatasetLoader,
@@ -308,22 +320,26 @@ class UnifiedCloudDatasetBuilder:
 
     @staticmethod
     def build_multimodal_dataset(sources: list[str] = None, splits: dict[str, int] = None, **kwargs) -> list[MultimodalSample]:
-        if not sources: sources = ["mine_gdrive", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
+        if not sources: sources = ["mine", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
         if not splits: splits = {"train": 2000, "validation": 500}
         all_samples = []
         
         for source in sources:
             loader_class = UnifiedCloudDatasetBuilder.REGISTRY.get(source.lower().strip())
             if not loader_class: continue
+            logger.info(f"Executing Loader: {source.upper()}")
             for split_name, limit in splits.items():
                 all_samples.extend(loader_class.load_split(split=split_name, limit=limit))
 
         if len(all_samples) < 10:
+            logger.error("FATAL: All primary datasets failed to load. Engaging Synthetic Generator.")
             all_samples.extend(SyntheticMultimodalGenerator.generate(splits.get("train", 1000)))
+        
+        logger.info(f"UNIFIED BUILDER COMPLETE: {len(all_samples)} total samples.")
         return all_samples
 
 # ==============================================================================
-# 8. PYTORCH DATASET & DATALOADERS (WITH REAL IMAGE SUPPORT)
+# 8. PYTORCH DATASET & DATALOADERS
 # ==============================================================================
 
 class CloudMultimodalDataset(Dataset):
@@ -331,7 +347,6 @@ class CloudMultimodalDataset(Dataset):
         self.samples = samples
         self.tokenizer = tokenizer
         self.max_text_len = max_text_len
-        # 🌟 PyTorch Vision Transforms!
         self.img_transform = T.Compose([
             T.Resize((224, 224)),
             T.ToTensor(),
@@ -342,20 +357,17 @@ class CloudMultimodalDataset(Dataset):
     
     def __getitem__(self, idx: int) -> dict:
         sample = self.samples[idx]
-        
-        # 1. Text
         safe_text = sample.text if sample.text and str(sample.text).strip() else "[NO TEXT]"
         text_encoding = self.tokenizer(safe_text, max_length=self.max_text_len, truncation=True, padding="max_length", return_tensors="pt")
         
         batch = {
             "input_ids": text_encoding["input_ids"].squeeze(0),
             "attention_mask": text_encoding["attention_mask"].squeeze(0),
-            "emotion_label": torch.tensor(max(0, int(sample.emotion_label)), dtype=torch.long),
+            "emotion_labels": torch.tensor(max(0, int(sample.emotion_label)), dtype=torch.long),
             "source": sample.source_dataset,
         }
-        batch["emotion_labels"] = batch["emotion_label"]
         
-        # 2. Intents & Actions
+        # Multilabel targets
         intention_target = torch.zeros(20, dtype=torch.float32)
         for intent_idx in sample.intention_labels:
             if 0 <= intent_idx < 20: intention_target[intent_idx] = 1.0
@@ -366,57 +378,51 @@ class CloudMultimodalDataset(Dataset):
             if 0 <= action_idx < 15: action_target[action_idx] = 1.0
         batch["action_labels"] = action_target
         
-        # 🌟 3. REAL IMAGE LOADING
+        # 🌟 REAL IMAGE LOADING
         if sample.image_path and os.path.exists(sample.image_path):
             try:
                 img = Image.open(sample.image_path).convert('RGB')
                 batch["images"] = self.img_transform(img)
             except:
-                batch["images"] = torch.zeros(3, 224, 224) # Fallback if image is corrupted
+                batch["images"] = torch.zeros(3, 224, 224)
         else:
-            batch["images"] = torch.zeros(3, 224, 224) # Fallback if text-only sample
+            batch["images"] = torch.zeros(3, 224, 224)
             
-        # Audio & Video Fallbacks (Kept safe to prevent OOM)
-        batch["audio_features"] = torch.zeros(512, dtype=torch.float32)
-        batch["video_features"] = torch.zeros(1024, dtype=torch.float32)
-        
-        batch["modality_mask"] = torch.tensor([
-            1.0 if sample.modality_available.get("text") else 0.0,
-            1.0 if sample.modality_available.get("image") else 0.0,
-            1.0 if sample.modality_available.get("audio") else 0.0,
-            1.0 if sample.modality_available.get("video") else 0.0,
-        ], dtype=torch.float32)
         return batch
 
 def get_cloud_dataloaders(
     batch_size: int = 16, eval_batch_size: Optional[int] = None, num_workers: int = 4, 
     sources: list[str] = None, max_samples: dict[str, int] = None, max_rows_per_source: Optional[int] = None, 
-    distributed: bool = False, dataset_profile: str = "balanced", cache_dir: Optional[str] = None, mine_gdrive_root: Optional[str] = None
+    distributed: bool = False, **kwargs
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     from transformers import AutoTokenizer
     repo_root = Path(__file__).resolve().parent.parent
+    
+    # Set Cache Paths
     os.environ["HF_DATASETS_CACHE"] = str((repo_root / "data" / "hf_datasets").resolve())
     os.environ["TRANSFORMERS_CACHE"] = str((repo_root / "models" / "hf_models").resolve())
-    if mine_gdrive_root: os.environ["MINE_GDRIVE_ROOT"] = str(Path(mine_gdrive_root).expanduser().resolve())
-    else: os.environ["MINE_GDRIVE_ROOT"] = str((repo_root / "data" / "mine_gdrive").resolve())
-
-    tokenizer = AutoTokenizer.from_pretrained("roberta-large", cache_dir=os.environ["TRANSFORMERS_CACHE"], clean_up_tokenization_spaces=True)
-    if max_samples is None:
-        max_samples = {"train": int(max_rows_per_source) if max_rows_per_source else 5000, "validation": max(100, int(max_rows_per_source)//5) if max_rows_per_source else 1000}
     
-    all_samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(sources=sources, splits={"train": max_samples["train"], "validation": max_samples["validation"]})
-    n_train = max(1, int(0.8 * len(all_samples)))
-    n_val = max(1, int(0.1 * len(all_samples)))
+    tokenizer = AutoTokenizer.from_pretrained("roberta-large", cache_dir=os.environ["TRANSFORMERS_CACHE"], clean_up_tokenization_spaces=True)
+    
+    if max_samples is None:
+        train_rows = int(max_rows_per_source) if max_rows_per_source else 5000
+        val_rows = max(100, train_rows // 5)
+        max_samples = {"train": train_rows, "validation": val_rows}
+    
+    all_samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(sources=sources, splits=max_samples)
+    
+    random.shuffle(all_samples)
+    n_train = int(0.8 * len(all_samples))
+    n_val = int(0.1 * len(all_samples))
     
     train_ds = CloudMultimodalDataset(all_samples[:n_train], tokenizer)
     val_ds = CloudMultimodalDataset(all_samples[n_train:n_train+n_val], tokenizer)
     test_ds = CloudMultimodalDataset(all_samples[n_train+n_val:] or all_samples[:1], tokenizer)
     
     train_sampler = DistributedSampler(train_ds) if distributed else None
-    val_sampler = DistributedSampler(val_ds, shuffle=False) if distributed else None
-    test_sampler = DistributedSampler(test_ds, shuffle=False) if distributed else None
     
     train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=(train_sampler is None), sampler=train_sampler, num_workers=num_workers, pin_memory=True)
-    val_dl = DataLoader(val_ds, batch_size=eval_batch_size or batch_size, shuffle=False, sampler=val_sampler, num_workers=num_workers, pin_memory=True)
-    test_dl = DataLoader(test_ds, batch_size=eval_batch_size or batch_size, shuffle=False, sampler=test_sampler, num_workers=num_workers, pin_memory=True)
+    val_dl = DataLoader(val_ds, batch_size=eval_batch_size or batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    test_dl = DataLoader(test_ds, batch_size=eval_batch_size or batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    
     return train_dl, val_dl, test_dl
