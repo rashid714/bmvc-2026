@@ -17,7 +17,7 @@ PROFESSOR_OUTPUT_DIR ?= checkpoints/professor-run
 BEST_OUTPUT_DIR ?= checkpoints/advanced-best-ultra
 
 BATCH_SIZE ?= 8
-EPOCHS ?= 10
+EPOCHS ?= 6
 NUM_WORKERS ?= 4
 MAX_ROWS ?= 5000
 SEEDS ?= 41 42 43
@@ -227,13 +227,13 @@ professor-run:
 		$(TORCHRUN) --nproc_per_node=$(GPU_COUNT) scripts/train_advanced_multimodal.py \
 			--config $(CONFIG) \
 			--batch-size 8 \
-			--epochs 10 \
+			--epochs 6 \
 			--output-dir $(PROFESSOR_OUTPUT_DIR); \
 	else \
 		$(PYTHON) scripts/train_advanced_multimodal.py \
 			--config $(CONFIG) \
 			--batch-size 8 \
-			--epochs 10 \
+			--epochs 6 \
 			--output-dir $(PROFESSOR_OUTPUT_DIR); \
 	fi
 	@echo "Professor run complete: $(PROFESSOR_OUTPUT_DIR)"
