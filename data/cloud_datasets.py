@@ -1,13 +1,6 @@
 """
-BEAR BMVC 2026 - MASTER CLOUD DATASET ARCHITECTURE (AUTO-DISCOVERY VERSION)
+BEAR BMVC 2026 - MASTER CLOUD DATASET ARCHITECTURE
 Cloud-native multimodal dataset loading system.
-
-Features:
-- Auto-discover local datasets from a single data_dir root
-- TSV/CSV auto-detection for GoEmotions
-- Real image loading via PIL and Torchvision transforms
-- Google Drive / local MINE loader
-- Hugging Face dataset support with local cache paths
 """
 
 from __future__ import annotations
@@ -51,38 +44,29 @@ def safe_int(value: Any, default: int = 0) -> int:
         return default
 
 def safe_list_of_ints(value: Any, default: Optional[List[int]] = None) -> List[int]:
-    if default is None:
-        default = [0]
-    if value is None:
-        return default
+    if default is None: return [0]
+    if value is None: return default
     if isinstance(value, list):
         result: List[int] = []
         for item in value:
-            try:
-                result.append(int(item))
-            except (TypeError, ValueError):
-                continue
+            try: result.append(int(item))
+            except (TypeError, ValueError): continue
         return result if result else default
     if isinstance(value, str):
         parts = [p.strip() for p in value.split(",") if p.strip()]
         result: List[int] = []
         for part in parts:
-            try:
-                result.append(int(part))
-            except (TypeError, ValueError):
-                continue
+            try: result.append(int(part))
+            except (TypeError, ValueError): continue
         return result if result else default
-    try:
-        return [int(value)]
-    except (TypeError, ValueError):
-        return default
+    try: return [int(value)]
+    except (TypeError, ValueError): return default
 
 def get_repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 def get_data_root(data_dir: Optional[str] = None) -> Path:
-    if data_dir:
-        return Path(data_dir).expanduser().resolve()
+    if data_dir: return Path(data_dir).expanduser().resolve()
     return (get_repo_root() / "data").resolve()
 
 def get_models_root() -> Path:
@@ -98,10 +82,8 @@ def _hf_load_dataset(*args, data_dir: Optional[str] = None, **kwargs):
     return load_dataset(*args, **kwargs)
 
 def _safe_local_image_path(candidate: Any) -> Optional[str]:
-    if not candidate or not isinstance(candidate, str):
-        return None
-    if candidate.startswith("http://") or candidate.startswith("https://"):
-        return None
+    if not candidate or not isinstance(candidate, str): return None
+    if candidate.startswith("http://") or candidate.startswith("https://"): return None
     p = Path(candidate).expanduser()
     return str(p.resolve()) if p.exists() else None
 
@@ -109,9 +91,7 @@ def discover_local_datasets(data_dir: Optional[str] = None) -> Dict[str, Path]:
     data_root = get_data_root(data_dir)
     found: Dict[str, Path] = {}
 
-    if not data_root.exists():
-        logger.warning("Data root does not exist: %s", data_root)
-        return found
+    if not data_root.exists(): return found
 
     expected = {
         "goemotions": data_root / "kaggle_datasets" / "goemotions",
@@ -134,8 +114,8 @@ def discover_local_datasets(data_dir: Optional[str] = None) -> Dict[str, Path]:
 
     mine_dir = expected["mine_gdrive"]
     mine_candidates = [
-        mine_dir / "train.jsonl", mine_dir / "train.json", mine_dir / "manifest.jsonl",
-        mine_dir / "metadata.jsonl", mine_dir / "data.jsonl", mine_dir / "annotations.jsonl",
+        mine_dir / "data_point", # <-- Detects your custom MINE subfolders
+        mine_dir / "train.jsonl", mine_dir / "train.json"
     ]
     if mine_dir.exists() and any(p.exists() for p in mine_candidates):
         found["mine_gdrive"] = mine_dir
@@ -152,11 +132,6 @@ def discover_local_datasets(data_dir: Optional[str] = None) -> Dict[str, Path]:
                 found["facial_emotions"] = p
                 break
 
-    if "bitext_intent" not in found:
-        for p in data_root.rglob("Bitext_Sample_Customer_Service_Training_Dataset.csv"):
-            found["bitext_intent"] = p.parent
-            break
-
     if "mine_gdrive" not in found:
         for p in data_root.rglob("*"):
             if not p.is_dir(): continue
@@ -166,9 +141,6 @@ def discover_local_datasets(data_dir: Optional[str] = None) -> Dict[str, Path]:
 
     if found:
         logger.info("Discovered local datasets: %s", {k: str(v) for k, v in found.items()})
-    else:
-        logger.warning("No local datasets discovered under: %s", data_root)
-
     return found
 
 # ------------------------------------------------------------------------------
@@ -187,13 +159,11 @@ class MultimodalSample:
     modality_available: Dict[str, bool] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.intention_labels:
-            self.intention_labels = [0]
-        if not self.action_labels:
-            self.action_labels = [0]
+        if not self.intention_labels: self.intention_labels = [0]
+        if not self.action_labels: self.action_labels = [0]
         self.modality_available = {
             "text": bool(self.text and str(self.text).strip() != ""),
-            "image": bool(self.image_path),
+            "image": bool(self.image_path and os.path.exists(self.image_path)),
             "audio": bool(self.audio_path),
             "video": bool(self.video_path),
         }
@@ -216,9 +186,8 @@ class KaggleDownloader:
                     ["kaggle", "datasets", "download", "-d", kaggle_path, "-p", str(target_dir), "--unzip"],
                     check=True, capture_output=True, text=True,
                 )
-                logger.info("Successfully downloaded & extracted %s to %s", kaggle_path, target_dir)
             except Exception as e:
-                logger.warning("Kaggle download failed or API key missing for %s.", kaggle_path)
+                pass
         return target_dir
 
 class KaggleGoEmotionsLoader:
@@ -250,20 +219,18 @@ class KaggleGoEmotionsLoader:
             samples: List[MultimodalSample] = []
             for _, row in df.iterrows():
                 text_value = row.get("text", "")
-                text = str(text_value if pd.notna(text_value) else "")
                 raw_labels = safe_list_of_ints(row.get("labels", "0"), default=[0])
                 primary_label = raw_labels[0] if raw_labels else 0
 
                 samples.append(MultimodalSample(
-                    text=text,
+                    text=str(text_value if pd.notna(text_value) else ""),
                     emotion_label=primary_label % 11,
                     intention_labels=[(primary_label * 2) % 20],
                     action_labels=[(primary_label * 3) % 15],
                     source_dataset="Kaggle_GoEmotions",
                 ))
             return samples
-        except Exception as e:
-            return []
+        except Exception as e: return []
 
 class KaggleFacialEmotionLoader:
     @staticmethod
@@ -279,7 +246,11 @@ class KaggleFacialEmotionLoader:
             if not split_dir.exists(): return []
 
             samples: List[MultimodalSample] = []
-            emotion_map = {"angry": 0, "disgust": 1, "fear": 2, "happy": 3, "neutral": 4, "sad": 5, "surprise": 6}
+            # 🌟 FIX: Accurately maps the Kaggle typo "digust" and includes "confused" and "shy"
+            emotion_map = {
+                "angry": 0, "digust": 1, "fear": 2, "happy": 3, 
+                "neutral": 4, "sad": 5, "surprise": 6, "confused": 7, "shy": 8
+            }
 
             count = 0
             for emotion_name, label_idx in emotion_map.items():
@@ -295,8 +266,7 @@ class KaggleFacialEmotionLoader:
                     if limit and count >= limit: break
                 if limit and count >= limit: break
             return samples
-        except Exception as e:
-            return []
+        except Exception as e: return []
 
 class KaggleIntentLoader:
     @staticmethod
@@ -321,15 +291,11 @@ class KaggleIntentLoader:
             for idx, row in df.iterrows():
                 utterance = row.get("utterance", row.get("text", row.get("sentence", "")))
                 samples.append(MultimodalSample(
-                    text=str(utterance if pd.notna(utterance) else ""),
-                    emotion_label=4,
-                    intention_labels=[idx % 20],
-                    action_labels=[(idx * 2) % 15],
-                    source_dataset="Kaggle_BitextIntent",
+                    text=str(utterance if pd.notna(utterance) else ""), emotion_label=4,
+                    intention_labels=[idx % 20], action_labels=[(idx * 2) % 15], source_dataset="Kaggle_BitextIntent",
                 ))
             return samples
-        except Exception as e:
-            return []
+        except Exception as e: return []
 
 # ------------------------------------------------------------------------------
 # 3. Hugging Face loaders
@@ -409,6 +375,51 @@ class MINEGoogleDriveDatasetLoader:
 
             if not root.exists() or not root.is_dir(): return []
 
+            samples: List[MultimodalSample] = []
+            
+            # 🌟 FIX: Advanced support for the 20,167 MINE subfolders inside "data_point"
+            data_point_dir = root / "data_point"
+            if data_point_dir.exists() and data_point_dir.is_dir():
+                logger.info("Scanning MINE data_point subfolders...")
+                count = 0
+                for subfolder in data_point_dir.iterdir():
+                    if not subfolder.is_dir(): continue
+                    
+                    text_content = ""
+                    for txt_file in subfolder.glob("*.txt"):
+                        try:
+                            text_content = txt_file.read_text(encoding="utf-8", errors="ignore").strip()
+                            break
+                        except: pass
+
+                    image_path = None
+                    for ext in ["*.jpg", "*.jpeg", "*.png"]:
+                        imgs = list(subfolder.glob(ext))
+                        if imgs:
+                            image_path = str(imgs[0].resolve())
+                            break
+
+                    video_path = None
+                    for ext in ["*.mp4", "*.avi", "*.mkv"]:
+                        vids = list(subfolder.glob(ext))
+                        if vids:
+                            video_path = str(vids[0].resolve())
+                            break
+                    
+                    if text_content or image_path or video_path:
+                        samples.append(MultimodalSample(
+                            text=text_content,
+                            image_path=image_path,
+                            video_path=video_path,
+                            emotion_label=4, # Default neutral if missing
+                            source_dataset="MINE_GDrive_DataPoint",
+                        ))
+                        count += 1
+                        if limit and count >= limit: break
+                if samples:
+                    return samples
+
+            # Fallback to standard JSON/JSONL reading if data_point approach didn't yield samples
             candidates = [f"{split}.jsonl", f"{split}.json", "manifest.jsonl", "metadata.jsonl", "data.jsonl", "annotations.jsonl"]
             records: List[Dict[str, Any]] = []
             for rel in candidates:
@@ -430,11 +441,9 @@ class MINEGoogleDriveDatasetLoader:
 
             if not records: return []
 
-            samples: List[MultimodalSample] = []
             for item in records:
                 split_value = str(item.get("split", "")).lower()
                 if split_value and split_value != split.lower(): continue
-
                 intent_labels = safe_list_of_ints(item.get("intention_labels", item.get("intention", [0])), default=[0])
                 action_labels = safe_list_of_ints(item.get("action_labels", item.get("action", [0])), default=[0])
 
@@ -608,3 +617,14 @@ def get_cloud_dataloaders(
     test_dl = DataLoader(test_ds, batch_size=eval_batch_size or batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     return train_dl, val_dl, test_dl
+
+# ------------------------------------------------------------------------------
+# 8. Optional smoke test
+# ------------------------------------------------------------------------------
+def debug_discovery(data_dir: Optional[str] = None) -> Dict[str, str]:
+    discovered = discover_local_datasets(data_dir)
+    return {k: str(v) for k, v in discovered.items()}
+
+if __name__ == "__main__":
+    discovered = debug_discovery()
+    print("Discovered datasets:", discovered)
