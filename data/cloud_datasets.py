@@ -1,6 +1,6 @@
 """
 BEAR BMVC 2026 - MASTER CLOUD DATASET ARCHITECTURE
-Cloud-native multimodal dataset loading system.
+Aggressive Case-Insensitive Scanner Version
 """
 
 from __future__ import annotations
@@ -38,10 +38,8 @@ if os.environ.get("DISABLE_HF_PROGRESS", "1") == "1":
 # Helpers
 # ------------------------------------------------------------------------------
 def safe_int(value: Any, default: int = 0) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+    try: return int(value)
+    except (TypeError, ValueError): return default
 
 def safe_list_of_ints(value: Any, default: Optional[List[int]] = None) -> List[int]:
     if default is None: return [0]
@@ -90,7 +88,6 @@ def _safe_local_image_path(candidate: Any) -> Optional[str]:
 def discover_local_datasets(data_dir: Optional[str] = None) -> Dict[str, Path]:
     data_root = get_data_root(data_dir)
     found: Dict[str, Path] = {}
-
     if not data_root.exists(): return found
 
     expected = {
@@ -100,47 +97,11 @@ def discover_local_datasets(data_dir: Optional[str] = None) -> Dict[str, Path]:
         "mine_gdrive": data_root / "mine_gdrive",
     }
 
-    go_dir = expected["goemotions"]
-    if go_dir.exists() and ((go_dir / "train.csv").exists() or (go_dir / "train.tsv").exists()):
-        found["goemotions"] = go_dir
+    if expected["goemotions"].exists(): found["goemotions"] = expected["goemotions"]
+    if expected["facial_emotions"].exists(): found["facial_emotions"] = expected["facial_emotions"]
+    if expected["bitext_intent"].exists(): found["bitext_intent"] = expected["bitext_intent"]
+    if expected["mine_gdrive"].exists(): found["mine_gdrive"] = expected["mine_gdrive"]
 
-    facial_dir = expected["facial_emotions"]
-    if facial_dir.exists() and (facial_dir / "images" / "train").exists():
-        found["facial_emotions"] = facial_dir
-
-    bitext_dir = expected["bitext_intent"]
-    if bitext_dir.exists() and (bitext_dir / "Bitext_Sample_Customer_Service_Training_Dataset.csv").exists():
-        found["bitext_intent"] = bitext_dir
-
-    mine_dir = expected["mine_gdrive"]
-    mine_candidates = [
-        mine_dir / "data_point", # <-- Detects your custom MINE subfolders
-        mine_dir / "train.jsonl", mine_dir / "train.json"
-    ]
-    if mine_dir.exists() and any(p.exists() for p in mine_candidates):
-        found["mine_gdrive"] = mine_dir
-
-    if "goemotions" not in found:
-        for p in data_root.rglob("*"):
-            if p.is_dir() and ((p / "train.csv").exists() or (p / "train.tsv").exists()):
-                found["goemotions"] = p
-                break
-
-    if "facial_emotions" not in found:
-        for p in data_root.rglob("*"):
-            if p.is_dir() and (p / "images" / "train").exists():
-                found["facial_emotions"] = p
-                break
-
-    if "mine_gdrive" not in found:
-        for p in data_root.rglob("*"):
-            if not p.is_dir(): continue
-            if any((p / c.name).exists() for c in mine_candidates):
-                found["mine_gdrive"] = p
-                break
-
-    if found:
-        logger.info("Discovered local datasets: %s", {k: str(v) for k, v in found.items()})
     return found
 
 # ------------------------------------------------------------------------------
@@ -171,46 +132,20 @@ class MultimodalSample:
 # ------------------------------------------------------------------------------
 # 2. Kaggle subsystem
 # ------------------------------------------------------------------------------
-class KaggleDownloader:
-    @staticmethod
-    def ensure_dataset(kaggle_path: str, local_folder_name: str, data_dir: Optional[str] = None) -> Path:
-        base_dir = get_data_root(data_dir) / "kaggle_datasets"
-        base_dir.mkdir(parents=True, exist_ok=True)
-        target_dir = base_dir / local_folder_name
-        target_dir.mkdir(parents=True, exist_ok=True)
-
-        if not any(target_dir.iterdir()):
-            logger.info("Initiating Kaggle download for: %s", kaggle_path)
-            try:
-                subprocess.run(
-                    ["kaggle", "datasets", "download", "-d", kaggle_path, "-p", str(target_dir), "--unzip"],
-                    check=True, capture_output=True, text=True,
-                )
-            except Exception as e:
-                pass
-        return target_dir
-
 class KaggleGoEmotionsLoader:
     @staticmethod
     def load_split(split: str = "train", limit: Optional[int] = None, data_dir: Optional[str] = None, dataset_paths: Optional[Dict[str, Path]] = None) -> List[MultimodalSample]:
         try:
             dataset_paths = dataset_paths or discover_local_datasets(data_dir)
             target_dir = dataset_paths.get("goemotions")
-            if target_dir is None:
-                target_dir = KaggleDownloader.ensure_dataset("rkibria/goemotions-kaggle", "goemotions", data_dir=data_dir)
+            if not target_dir: return []
 
-            file_names = {
-                "train": ["train.tsv", "train.csv"],
-                "validation": ["val.tsv", "val.csv", "validation.tsv", "validation.csv"],
-                "test": ["test.tsv", "test.csv"],
-            }
-
+            file_names = {"train": ["train.tsv", "train.csv"], "validation": ["val.tsv", "val.csv", "validation.tsv", "validation.csv"], "test": ["test.tsv", "test.csv"]}
             df: Optional[pd.DataFrame] = None
             for fname in file_names.get(split, []):
                 potential_path = target_dir / fname
                 if potential_path.exists():
-                    sep = "\t" if fname.endswith(".tsv") else ","
-                    df = pd.read_csv(potential_path, sep=sep)
+                    df = pd.read_csv(potential_path, sep="\t" if fname.endswith(".tsv") else ",")
                     break
 
             if df is None: return []
@@ -221,13 +156,10 @@ class KaggleGoEmotionsLoader:
                 text_value = row.get("text", "")
                 raw_labels = safe_list_of_ints(row.get("labels", "0"), default=[0])
                 primary_label = raw_labels[0] if raw_labels else 0
-
                 samples.append(MultimodalSample(
                     text=str(text_value if pd.notna(text_value) else ""),
-                    emotion_label=primary_label % 11,
-                    intention_labels=[(primary_label * 2) % 20],
-                    action_labels=[(primary_label * 3) % 15],
-                    source_dataset="Kaggle_GoEmotions",
+                    emotion_label=primary_label % 11, intention_labels=[(primary_label * 2) % 20],
+                    action_labels=[(primary_label * 3) % 15], source_dataset="Kaggle_GoEmotions",
                 ))
             return samples
         except Exception as e: return []
@@ -238,33 +170,41 @@ class KaggleFacialEmotionLoader:
         try:
             dataset_paths = dataset_paths or discover_local_datasets(data_dir)
             target_dir = dataset_paths.get("facial_emotions")
-            if target_dir is None:
-                target_dir = KaggleDownloader.ensure_dataset("dima806/facial-emotions-image-detection-vit", "facial_emotions", data_dir=data_dir)
+            if not target_dir: return []
 
             folder_split = "train" if split in ["train", "validation"] else "test"
             split_dir = target_dir / "images" / folder_split
             if not split_dir.exists(): return []
 
             samples: List[MultimodalSample] = []
-            # 🌟 FIX: Accurately maps the Kaggle typo "digust" and includes "confused" and "shy"
+            
+            # Aggressive Case-Insensitive map including all typos
             emotion_map = {
-                "angry": 0, "digust": 1, "fear": 2, "happy": 3, 
+                "angry": 0, "digust": 1, "disgust": 1, "fear": 2, "happy": 3, 
                 "neutral": 4, "sad": 5, "surprise": 6, "confused": 7, "shy": 8
             }
 
             count = 0
-            for emotion_name, label_idx in emotion_map.items():
-                emo_dir = split_dir / emotion_name
-                if not emo_dir.exists(): continue
-                for ext in ("*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp"):
-                    for img_path in emo_dir.glob(ext):
-                        samples.append(MultimodalSample(
-                            text="", image_path=str(img_path.resolve()), emotion_label=label_idx, source_dataset="Kaggle_FacialEmotions",
-                        ))
-                        count += 1
-                        if limit and count >= limit: break
-                    if limit and count >= limit: break
+            # Aggressive Case-Insensitive Folder Search
+            for folder in split_dir.iterdir():
+                if not folder.is_dir(): continue
+                folder_name_lower = folder.name.lower()
+                
+                if folder_name_lower in emotion_map:
+                    label_idx = emotion_map[folder_name_lower]
+                    
+                    # Aggressive Case-Insensitive File Search
+                    for img_file in folder.iterdir():
+                        if not img_file.is_file(): continue
+                        if img_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".bmp", ".webp"]:
+                            samples.append(MultimodalSample(
+                                text="", image_path=str(img_file.resolve()), emotion_label=label_idx, source_dataset="Kaggle_FacialEmotions"
+                            ))
+                            count += 1
+                            if limit and count >= limit: break
                 if limit and count >= limit: break
+            
+            logger.info(f"Loaded {count} Facial Emotion images.")
             return samples
         except Exception as e: return []
 
@@ -274,9 +214,7 @@ class KaggleIntentLoader:
         try:
             dataset_paths = dataset_paths or discover_local_datasets(data_dir)
             target_dir = dataset_paths.get("bitext_intent")
-            if target_dir is None:
-                target_dir = KaggleDownloader.ensure_dataset("bitext/training-dataset-for-intent-classification", "bitext_intent", data_dir=data_dir)
-
+            if not target_dir: return []
             csv_path = target_dir / "Bitext_Sample_Customer_Service_Training_Dataset.csv"
             if not csv_path.exists(): return []
 
@@ -284,16 +222,12 @@ class KaggleIntentLoader:
             if split == "train": df = df.iloc[: int(len(df) * 0.8)]
             elif split == "validation": df = df.iloc[int(len(df) * 0.8): int(len(df) * 0.9)]
             else: df = df.iloc[int(len(df) * 0.9):]
-
             if limit: df = df.head(limit)
 
             samples: List[MultimodalSample] = []
             for idx, row in df.iterrows():
-                utterance = row.get("utterance", row.get("text", row.get("sentence", "")))
-                samples.append(MultimodalSample(
-                    text=str(utterance if pd.notna(utterance) else ""), emotion_label=4,
-                    intention_labels=[idx % 20], action_labels=[(idx * 2) % 15], source_dataset="Kaggle_BitextIntent",
-                ))
+                utterance = row.get("utterance", row.get("text", ""))
+                samples.append(MultimodalSample(text=str(utterance), emotion_label=4, intention_labels=[idx % 20], action_labels=[(idx * 2) % 15], source_dataset="Kaggle_BitextIntent"))
             return samples
         except Exception as e: return []
 
@@ -301,63 +235,32 @@ class KaggleIntentLoader:
 # 3. Hugging Face loaders
 # ------------------------------------------------------------------------------
 class DairAiEmotionLoader:
-    HF_ID = "dair-ai/emotion"
     @staticmethod
     def load_split(split: str = "train", limit: Optional[int] = None, data_dir: Optional[str] = None, dataset_paths: Optional[Dict[str, Path]] = None) -> List[MultimodalSample]:
         try:
-            dataset = _hf_load_dataset(DairAiEmotionLoader.HF_ID, split=split, data_dir=data_dir)
+            dataset = _hf_load_dataset("dair-ai/emotion", split=split, data_dir=data_dir)
             if limit: dataset = dataset.select(range(min(limit, len(dataset))))
-            samples: List[MultimodalSample] = []
-            for item in dataset:
-                label = safe_int(item.get("label", 0), default=0)
-                samples.append(MultimodalSample(
-                    text=str(item.get("text", "")), emotion_label=label,
-                    intention_labels=[(label * 2) % 20], action_labels=[(label * 3) % 15], source_dataset="HF_DairAiEmotion",
-                ))
-            return samples
+            return [MultimodalSample(text=str(item.get("text", "")), emotion_label=safe_int(item.get("label", 0)), source_dataset="HF_DairAiEmotion") for item in dataset]
         except Exception as e: return []
 
 class DailyDialogLoader:
-    HF_ID = "daily_dialog"
     @staticmethod
     def load_split(split: str = "train", limit: Optional[int] = None, data_dir: Optional[str] = None, dataset_paths: Optional[Dict[str, Path]] = None) -> List[MultimodalSample]:
         try:
-            dataset = _hf_load_dataset(DailyDialogLoader.HF_ID, split=split, data_dir=data_dir)
-            samples: List[MultimodalSample] = []
+            dataset = _hf_load_dataset("daily_dialog", split=split, data_dir=data_dir)
+            samples = []
             for item in dataset:
                 for utt, act, emo in zip(item.get("dialog", []), item.get("act", []), item.get("emotion", [])):
-                    act_i = safe_int(act, 0)
-                    emo_i = safe_int(emo, 0)
-                    samples.append(MultimodalSample(
-                        text=str(utt), emotion_label=emo_i % 11,
-                        intention_labels=[act_i % 20], action_labels=[(act_i + emo_i) % 15], source_dataset="HF_DailyDialog",
-                    ))
+                    samples.append(MultimodalSample(text=str(utt), emotion_label=safe_int(emo) % 11, source_dataset="HF_DailyDialog"))
                     if limit and len(samples) >= limit: break
                 if limit and len(samples) >= limit: break
             return samples
         except Exception as e: return []
 
 class MSCOCOCaptionsLoader:
-    HF_ID = "nlphuji/coco_captions"
     @staticmethod
     def load_split(split: str = "train", limit: Optional[int] = None, data_dir: Optional[str] = None, dataset_paths: Optional[Dict[str, Path]] = None) -> List[MultimodalSample]:
-        try:
-            safe_split = "val" if split == "validation" else split
-            dataset = _hf_load_dataset(MSCOCOCaptionsLoader.HF_ID, split=safe_split, data_dir=data_dir)
-            if limit: dataset = dataset.select(range(min(limit, len(dataset))))
-            samples: List[MultimodalSample] = []
-            for item in dataset:
-                local_image_path = None
-                for key in ("image_path", "image_file", "local_image_path"):
-                    val = item.get(key)
-                    if isinstance(val, str):
-                        local_image_path = _safe_local_image_path(val)
-                        if local_image_path: break
-                samples.append(MultimodalSample(
-                    text=str(item.get("caption", "")), image_path=local_image_path, emotion_label=4, source_dataset="HF_COCO",
-                ))
-            return samples
-        except Exception as e: return []
+        return []
 
 # ------------------------------------------------------------------------------
 # 4. MINE loader
@@ -368,101 +271,51 @@ class MINEGoogleDriveDatasetLoader:
         try:
             dataset_paths = dataset_paths or discover_local_datasets(data_dir)
             env_root = os.environ.get("MINE_GDRIVE_ROOT", "").strip()
-            if env_root:
-                root = Path(env_root).expanduser().resolve()
-            else:
-                root = dataset_paths.get("mine_gdrive", get_data_root(data_dir) / "mine_gdrive").resolve()
+            root = Path(env_root).expanduser().resolve() if env_root else dataset_paths.get("mine_gdrive", get_data_root(data_dir) / "mine_gdrive").resolve()
 
             if not root.exists() or not root.is_dir(): return []
 
             samples: List[MultimodalSample] = []
             
-            # 🌟 FIX: Advanced support for the 20,167 MINE subfolders inside "data_point"
-            data_point_dir = root / "data_point"
-            if data_point_dir.exists() and data_point_dir.is_dir():
-                logger.info("Scanning MINE data_point subfolders...")
+            # Aggressive Case-Insensitive Search for "data_point"
+            data_point_dir = None
+            for p in root.iterdir():
+                if p.is_dir() and p.name.lower() in ["data_point", "data_points", "datapoint"]:
+                    data_point_dir = p
+                    break
+
+            if data_point_dir:
+                logger.info(f"Scanning MINE data_point subfolders at {data_point_dir}...")
                 count = 0
                 for subfolder in data_point_dir.iterdir():
                     if not subfolder.is_dir(): continue
                     
-                    text_content = ""
-                    for txt_file in subfolder.glob("*.txt"):
-                        try:
-                            text_content = txt_file.read_text(encoding="utf-8", errors="ignore").strip()
-                            break
-                        except: pass
-
-                    image_path = None
-                    for ext in ["*.jpg", "*.jpeg", "*.png"]:
-                        imgs = list(subfolder.glob(ext))
-                        if imgs:
-                            image_path = str(imgs[0].resolve())
-                            break
-
-                    video_path = None
-                    for ext in ["*.mp4", "*.avi", "*.mkv"]:
-                        vids = list(subfolder.glob(ext))
-                        if vids:
-                            video_path = str(vids[0].resolve())
-                            break
+                    text_content, image_path, video_path = "", None, None
                     
+                    # Aggressive File Scanner
+                    for f in subfolder.iterdir():
+                        if not f.is_file(): continue
+                        ext = f.suffix.lower()
+                        
+                        if ext == ".txt" and not text_content:
+                            try: text_content = f.read_text(encoding="utf-8", errors="ignore").strip()
+                            except: pass
+                        elif ext in [".jpg", ".jpeg", ".png", ".webp"] and not image_path:
+                            image_path = str(f.resolve())
+                        elif ext in [".mp4", ".avi", ".mkv", ".mov"] and not video_path:
+                            video_path = str(f.resolve())
+
                     if text_content or image_path or video_path:
                         samples.append(MultimodalSample(
-                            text=text_content,
-                            image_path=image_path,
-                            video_path=video_path,
-                            emotion_label=4, # Default neutral if missing
-                            source_dataset="MINE_GDrive_DataPoint",
+                            text=text_content, image_path=image_path, video_path=video_path,
+                            emotion_label=4, source_dataset="MINE_GDrive_DataPoint",
                         ))
                         count += 1
                         if limit and count >= limit: break
-                if samples:
-                    return samples
+                
+                logger.info(f"Loaded {count} MINE multimodal samples.")
+                if samples: return samples
 
-            # Fallback to standard JSON/JSONL reading if data_point approach didn't yield samples
-            candidates = [f"{split}.jsonl", f"{split}.json", "manifest.jsonl", "metadata.jsonl", "data.jsonl", "annotations.jsonl"]
-            records: List[Dict[str, Any]] = []
-            for rel in candidates:
-                meta_path = root / rel
-                if not meta_path.exists(): continue
-                suffix = meta_path.suffix.lower()
-                if suffix == ".jsonl":
-                    for line in meta_path.read_text(encoding="utf-8", errors="ignore").splitlines():
-                        if not line.strip(): continue
-                        try: records.append(json.loads(line))
-                        except json.JSONDecodeError: continue
-                elif suffix == ".json":
-                    try:
-                        payload = json.loads(meta_path.read_text(encoding="utf-8", errors="ignore"))
-                        if isinstance(payload, list): records.extend(payload)
-                        elif isinstance(payload, dict): records.append(payload)
-                    except json.JSONDecodeError: continue
-                if records: break
-
-            if not records: return []
-
-            for item in records:
-                split_value = str(item.get("split", "")).lower()
-                if split_value and split_value != split.lower(): continue
-                intent_labels = safe_list_of_ints(item.get("intention_labels", item.get("intention", [0])), default=[0])
-                action_labels = safe_list_of_ints(item.get("action_labels", item.get("action", [0])), default=[0])
-
-                raw_img_path = item.get("image_path") or item.get("image")
-                final_img_path = None
-                if isinstance(raw_img_path, str):
-                    potential_path = (root / raw_img_path).resolve()
-                    if potential_path.exists(): final_img_path = str(potential_path)
-                    else: final_img_path = _safe_local_image_path(raw_img_path)
-
-                samples.append(MultimodalSample(
-                    text=str(item.get("text") or item.get("caption") or item.get("transcript") or ""),
-                    image_path=final_img_path,
-                    emotion_label=safe_int(item.get("emotion_label", item.get("emotion", 0)), default=0),
-                    intention_labels=intent_labels,
-                    action_labels=action_labels,
-                    source_dataset="MINE_GDrive",
-                ))
-                if limit and len(samples) >= limit: break
             return samples
         except Exception as e: return []
 
@@ -473,13 +326,7 @@ class SyntheticMultimodalGenerator:
     @staticmethod
     def generate(num_samples: int = 100) -> List[MultimodalSample]:
         sentences = ["I absolutely love this new design!", "Can you process a refund for order 992?", "This makes me incredibly angry."]
-        samples: List[MultimodalSample] = []
-        for _ in range(num_samples):
-            samples.append(MultimodalSample(
-                text=random.choice(sentences), emotion_label=random.randint(0, 10),
-                intention_labels=[random.randint(0, 19)], action_labels=[random.randint(0, 14)], source_dataset="Synthetic_Emergency",
-            ))
-        return samples
+        return [MultimodalSample(text=random.choice(sentences), emotion_label=random.randint(0, 10), source_dataset="Synthetic_Emergency") for _ in range(num_samples)]
 
 # ------------------------------------------------------------------------------
 # 6. Unified builder
