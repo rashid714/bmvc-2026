@@ -1,13 +1,12 @@
 """
 Advanced Top-Tier Multimodal BEAR Model (BMVC 2026)
-Fixed version for compatibility with train_advanced_multimodal.py
+Spotlight Version: Independent Modality Scoring & VRAM-Optimized Freezing
 
 Key fixes:
-- Proper class-level forward() method
-- Returns a plain dict (not a tuple)
-- Real image support via ResNet50 backbone
-- Safe fallback if pretrained vision weights are unavailable
-- Added get_predictions() helper for compatibility with other training scripts
+- 🌟 Fixed Logical Flaw: Reliability module now scores each modality independently.
+- 🌟 VRAM Optimization: Strategically frozen bottom layers of dual-LLM backbone.
+- Proper class-level forward() method returning a dict.
+- Real image support via ResNet50 backbone.
 """
 
 from __future__ import annotations
@@ -60,43 +59,26 @@ class DualLayerAttention(nn.Module):
         super().__init__()
 
         self.layer1_attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            dropout=0.1,
-            batch_first=True,
+            embed_dim=hidden_dim, num_heads=num_heads, dropout=0.1, batch_first=True,
         )
         self.layer1_norm = nn.LayerNorm(hidden_dim)
         self.layer1_ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim * 4, hidden_dim),
         )
 
         self.layer2_attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim,
-            num_heads=num_heads,
-            dropout=0.1,
-            batch_first=True,
+            embed_dim=hidden_dim, num_heads=num_heads, dropout=0.1, batch_first=True,
         )
         self.layer2_norm = nn.LayerNorm(hidden_dim)
         self.layer2_ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim * 4, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim * 4, hidden_dim),
         )
 
         self.gating = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.Sigmoid(),
+            nn.Linear(hidden_dim * 2, hidden_dim), nn.Sigmoid(),
         )
 
-    def forward(
-        self,
-        embeddings_list: list[torch.Tensor],
-        reliability_scores: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward(self, embeddings_list: list[torch.Tensor], reliability_scores: torch.Tensor) -> torch.Tensor:
         stacked = torch.stack(embeddings_list, dim=1)  # [B, M, H]
 
         attn_out1, _ = self.layer1_attention(stacked, stacked, stacked)
@@ -104,6 +86,7 @@ class DualLayerAttention(nn.Module):
         ffn_out1 = self.layer1_ffn(attn_out1)
         layer1_out = self.layer1_norm(ffn_out1 + attn_out1)
 
+        # Apply reliability scores dynamically across modalities
         weighted1 = layer1_out * reliability_scores.unsqueeze(-1)
         layer1_fused = torch.mean(weighted1, dim=1)  # [B, H]
 
@@ -123,37 +106,48 @@ class DualLayerAttention(nn.Module):
 
 class AdvancedReliabilityModule(nn.Module):
     """
-    Modality reliability scoring with uncertainty estimation.
+    🌟 UPGRADE 1: Independent Modality Reliability Scoring
+    Instead of Text guessing the image's reliability, every modality evaluates itself.
     """
 
-    def __init__(self, hidden_dim: int = 1024, num_modalities: int = 4):
+    def __init__(self, hidden_dim: int = 1024):
         super().__init__()
-        self.confidence_net = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim, num_modalities),
-            nn.Softmax(dim=-1),
-        )
-        self.uncertainty_net = nn.Sequential(
+        # Shared scoring network that evaluates each modality's embedding independently
+        self.confidence_scorer = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
             nn.GELU(),
-            nn.Linear(hidden_dim // 2, num_modalities),
-            nn.Sigmoid(),
+            nn.Linear(hidden_dim // 2, 1)
         )
+        self.uncertainty_scorer = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid()
+        )
+        self.softmax = nn.Softmax(dim=1)
 
-    def forward(self, text_embed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        confidence = self.confidence_net(text_embed)
-        uncertainty = self.uncertainty_net(text_embed)
+    def forward(self, modalities_list: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        stacked_mods = torch.stack(modalities_list, dim=1) # [B, Num_Modalities, Hidden_Dim]
+        
+        # Calculate raw confidence for each modality independently
+        raw_confidence = self.confidence_scorer(stacked_mods).squeeze(-1) # [B, Num_Modalities]
+        confidence = self.softmax(raw_confidence)
+        
+        # Calculate uncertainty for each modality independently
+        uncertainty = self.uncertainty_scorer(stacked_mods).squeeze(-1) # [B, Num_Modalities]
+        
+        # Final combined reliability score
         reliability = confidence * (1.0 - uncertainty)
+        
+        # Re-normalize so attention weights sum to 1
+        reliability = reliability / (reliability.sum(dim=-1, keepdim=True) + 1e-6)
         return reliability, uncertainty
 
 
 class AdvancedLLMBackbone(nn.Module):
     """
-    Dual-layer LLM backbone combining two encoders.
-    Layer 1: RoBERTa-large
-    Layer 2: DistilRoBERTa-base
+    Dual-layer LLM backbone.
+    🌟 UPGRADE 2: Strategic Layer Freezing to save VRAM and speed up training.
     """
 
     def __init__(self, hidden_dim: int = 1024):
@@ -166,6 +160,19 @@ class AdvancedLLMBackbone(nn.Module):
         self.distilroberta = AutoModel.from_pretrained("distilroberta-base")
         self.distilroberta_proj = nn.Linear(768, hidden_dim)
 
+        # 🌟 VRAM OPTIMIZATION: Freeze the bottom 16 layers of RoBERTa (out of 24)
+        # It already knows grammar; it only needs to fine-tune the top layers for emotions.
+        if hasattr(self.roberta, "encoder"):
+            for layer in self.roberta.encoder.layer[:16]:
+                for param in layer.parameters():
+                    param.requires_grad = False
+                    
+        # Freeze the bottom 4 layers of DistilRoBERTa (out of 6)
+        if hasattr(self.distilroberta, "encoder"):
+            for layer in self.distilroberta.encoder.layer[:4]:
+                for param in layer.parameters():
+                    param.requires_grad = False
+
         self.fusion_gate = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.Sigmoid(),
@@ -177,10 +184,7 @@ class AdvancedLLMBackbone(nn.Module):
         roberta_cls = roberta_out.last_hidden_state[:, 0, :]
         roberta_embed = self.roberta_proj(roberta_cls)
 
-        distilroberta_out = self.distilroberta(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-        )
+        distilroberta_out = self.distilroberta(input_ids=input_ids, attention_mask=attention_mask)
         distilroberta_cls = distilroberta_out.last_hidden_state[:, 0, :]
         distilroberta_embed = self.distilroberta_proj(distilroberta_cls)
 
@@ -195,42 +199,21 @@ class AdvancedTriTaskHead(nn.Module):
     Task heads for emotion, intention, and action.
     """
 
-    def __init__(
-        self,
-        hidden_dim: int = 1024,
-        num_emotion: int = 11,
-        num_intention: int = 20,
-        num_action: int = 15,
-    ):
+    def __init__(self, hidden_dim: int = 1024, num_emotion: int = 11, num_intention: int = 20, num_action: int = 15):
         super().__init__()
         self.shared_encoder = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU(),
-            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(), nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(), nn.Dropout(0.2),
         )
 
         self.emotion_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, num_emotion),
+            nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim // 2, num_emotion),
         )
         self.intention_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, num_intention),
+            nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim // 2, num_intention),
         )
         self.action_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim // 2, num_action),
+            nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim // 2, num_action),
         )
 
     def forward(self, fused_embed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -244,12 +227,7 @@ class AdvancedTriTaskHead(nn.Module):
 class AdvancedBEARModel(nn.Module):
     """
     Advanced multimodal BEAR model.
-
-    Modalities:
-    - Text via dual-LLM backbone
-    - Images via ResNet50
-    - Audio placeholder encoder
-    - Video placeholder encoder
+    Modalities: Text, Images, Audio (Placeholder), Video (Placeholder)
     """
 
     def __init__(self, hidden_dim: int = 1024, use_pretrained_vision: bool = True):
@@ -259,39 +237,30 @@ class AdvancedBEARModel(nn.Module):
         self.text_backbone = AdvancedLLMBackbone(hidden_dim)
         self.text_encoder = AdvancedModalityEncoder(hidden_dim, hidden_dim)
 
-        # Vision backbone
         resnet = self._build_resnet50(use_pretrained_vision)
         for param in resnet.parameters():
             param.requires_grad = False
         self.vision_backbone = nn.Sequential(*list(resnet.children())[:-1])  # [B, 2048, 1, 1]
         self.image_encoder = AdvancedModalityEncoder(2048, hidden_dim)
 
-        # Placeholder encoders for future audio/video features
         self.audio_encoder = AdvancedModalityEncoder(512, hidden_dim)
         self.video_encoder = AdvancedModalityEncoder(1024, hidden_dim)
 
-        self.reliability_module = AdvancedReliabilityModule(hidden_dim, num_modalities=4)
+        self.reliability_module = AdvancedReliabilityModule(hidden_dim)
         self.fusion = DualLayerAttention(hidden_dim, num_heads=16)
-        self.task_heads = AdvancedTriTaskHead(
-            hidden_dim,
-            num_emotion=11,
-            num_intention=20,
-            num_action=15,
-        )
+        self.task_heads = AdvancedTriTaskHead(hidden_dim, num_emotion=11, num_intention=20, num_action=15)
         self.temperature = nn.Parameter(torch.ones(1))
 
     @staticmethod
     def _build_resnet50(use_pretrained_vision: bool) -> nn.Module:
         try:
             if use_pretrained_vision:
-                # torchvision >= 0.13 style
                 weights = getattr(models, "ResNet50_Weights").IMAGENET1K_V2
                 return models.resnet50(weights=weights)
             return models.resnet50(weights=None)
         except Exception as e:
             logger.warning("Falling back to uninitialized ResNet50 weights: %s", e)
             try:
-                # older torchvision fallback
                 return models.resnet50(pretrained=False)
             except TypeError:
                 return models.resnet50(weights=None)
@@ -299,7 +268,6 @@ class AdvancedBEARModel(nn.Module):
     def _encode_images(self, images: Optional[torch.Tensor], device: torch.device, batch_size: int) -> torch.Tensor:
         if images is None:
             return torch.zeros(batch_size, self.hidden_dim, device=device)
-
         if images.dim() != 4:
             raise ValueError(f"Expected images with shape [B, C, H, W], got {tuple(images.shape)}")
 
@@ -307,8 +275,6 @@ class AdvancedBEARModel(nn.Module):
             img_feats = self.vision_backbone(images).flatten(1)  # [B, 2048]
 
         image_embed = self.image_encoder(img_feats)
-
-        # Zero out embeddings for placeholder zero-images from the dataloader.
         image_present_mask = (images.abs().sum(dim=(1, 2, 3)) > 0).float().unsqueeze(1)
         image_embed = image_embed * image_present_mask
         return image_embed
@@ -327,8 +293,7 @@ class AdvancedBEARModel(nn.Module):
         text_embed = self.text_backbone(input_ids, attention_mask)
         text_embed = self.text_encoder(text_embed)
 
-        reliability_scores, uncertainties = self.reliability_module(text_embed)
-
+        # 🌟 Initialize Modality List for Independent Scoring
         modalities: list[torch.Tensor] = [text_embed]
 
         image_embed = self._encode_images(images, device=device, batch_size=batch_size)
@@ -345,6 +310,9 @@ class AdvancedBEARModel(nn.Module):
         else:
             video_embed = torch.zeros(batch_size, self.hidden_dim, device=device)
         modalities.append(video_embed)
+
+        # 🌟 Pass all modalities independently into the Reliability Module
+        reliability_scores, uncertainties = self.reliability_module(modalities)
 
         fused_embed = self.fusion(modalities, reliability_scores)
         emotion_logits, intention_logits, action_logits = self.task_heads(fused_embed)
