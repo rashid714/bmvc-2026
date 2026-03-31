@@ -1,342 +1,416 @@
+#!/usr/bin/env python3
 """
-Advanced Top-Tier Multimodal BEAR Model (BMVC 2026)
-Spotlight Version: Independent Modality Scoring & VRAM-Optimized Freezing
-
-Key fixes:
-- 🌟 Fixed Logical Flaw: Reliability module now scores each modality independently.
-- 🌟 VRAM Optimization: Strategically frozen bottom layers of dual-LLM backbone.
-- Proper class-level forward() method returning a dict.
-- Real image support via ResNet50 backbone.
+BMVC 2026 - Advanced Multimodal Training
+Spotlight Version: Cosine Annealing, FP16 Safety Sync, and Hardware Acceleration
+Uses Dual-Layer LLM + ResNet50 Vision + Automatic PDF Report Generation
 """
 
-from __future__ import annotations
-
+import os
+import sys
+import json
 import logging
-from typing import Dict, Optional
+import argparse
+from pathlib import Path
+from datetime import datetime
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import torch
 import torch.nn as nn
-import torchvision.models as models
-from transformers import AutoModel
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 
-logger = logging.getLogger(__name__)
+# 🌟 UPGRADE 1: Cosine Annealing for deep convergence
+from transformers import get_cosine_schedule_with_warmup 
+from transformers import logging as hf_logging
 
+# 🌟 CRITICAL FIX: This silences the scary "UNEXPECTED lm_head" warnings!
+hf_logging.set_verbosity_error()
 
-class AdvancedModalityEncoder(nn.Module):
-    """
-    Enhanced modality encoder.
-    Input: feature vector -> Output: normalized hidden_dim embedding
-    """
+import numpy as np
 
-    def __init__(self, input_dim: int, hidden_dim: int = 1024):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim * 2),
-            nn.LayerNorm(hidden_dim * 2),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim * 2, hidden_dim * 3),
-            nn.LayerNorm(hidden_dim * 3),
-            nn.GELU(),
-            nn.Dropout(0.1),
-            nn.Linear(hidden_dim * 3, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-        )
-        self.norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.norm(self.net(x))
+# Import advanced model
+from models.advanced_multimodal_bear import AdvancedBEARModel
+from training.losses import MultiTaskLoss
+from training.eval import evaluate_tritask
+from data.cloud_datasets import get_cloud_dataloaders
+from training.pdf_report_generator import generate_research_report_pdf, generate_raw_data_export
 
 
-class DualLayerAttention(nn.Module):
-    """
-    Dual-layer cross-modal attention mechanism.
-    Layer 1: low-level feature fusion
-    Layer 2: high-level semantic fusion
-    """
+# ═══════════════════════════════════════════════════════════════════════════
+# SETUP FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
 
-    def __init__(self, hidden_dim: int = 1024, num_heads: int = 16):
-        super().__init__()
-
-        self.layer1_attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=num_heads, dropout=0.1, batch_first=True,
-        )
-        self.layer1_norm = nn.LayerNorm(hidden_dim)
-        self.layer1_ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim * 4, hidden_dim),
-        )
-
-        self.layer2_attention = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=num_heads, dropout=0.1, batch_first=True,
-        )
-        self.layer2_norm = nn.LayerNorm(hidden_dim)
-        self.layer2_ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim * 4, hidden_dim),
-        )
-
-        self.gating = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim), nn.Sigmoid(),
-        )
-
-    def forward(self, embeddings_list: list[torch.Tensor], reliability_scores: torch.Tensor) -> torch.Tensor:
-        stacked = torch.stack(embeddings_list, dim=1)  # [B, M, H]
-
-        attn_out1, _ = self.layer1_attention(stacked, stacked, stacked)
-        attn_out1 = self.layer1_norm(attn_out1 + stacked)
-        ffn_out1 = self.layer1_ffn(attn_out1)
-        layer1_out = self.layer1_norm(ffn_out1 + attn_out1)
-
-        # Apply reliability scores dynamically across modalities
-        weighted1 = layer1_out * reliability_scores.unsqueeze(-1)
-        layer1_fused = torch.mean(weighted1, dim=1)  # [B, H]
-
-        attn_out2, _ = self.layer2_attention(stacked, stacked, stacked)
-        attn_out2 = self.layer2_norm(attn_out2 + stacked)
-        ffn_out2 = self.layer2_ffn(attn_out2)
-        layer2_out = self.layer2_norm(ffn_out2 + attn_out2)
-
-        weighted2 = layer2_out * (reliability_scores ** 1.5).unsqueeze(-1)
-        layer2_fused = torch.mean(weighted2, dim=1)  # [B, H]
-
-        combined_fused = torch.cat([layer1_fused, layer2_fused], dim=-1)
-        gate = self.gating(combined_fused)
-        final_fused = gate * layer1_fused + (1.0 - gate) * layer2_fused
-        return final_fused
-
-
-class AdvancedReliabilityModule(nn.Module):
-    """
-    🌟 UPGRADE 1: Independent Modality Reliability Scoring
-    Instead of Text guessing the image's reliability, every modality evaluates itself.
-    """
-
-    def __init__(self, hidden_dim: int = 1024):
-        super().__init__()
-        # Shared scoring network that evaluates each modality's embedding independently
-        self.confidence_scorer = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, 1)
-        )
-        self.uncertainty_scorer = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Sigmoid()
-        )
-        self.softmax = nn.Softmax(dim=1)
-
-    def forward(self, modalities_list: list[torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
-        stacked_mods = torch.stack(modalities_list, dim=1) # [B, Num_Modalities, Hidden_Dim]
+def setup_distributed():
+    """Initialize distributed training and hardware acceleration."""
+    if "RANK" in os.environ:
+        rank = int(os.environ["RANK"])
+        world_size = int(os.environ["WORLD_SIZE"])
+        dist.init_process_group(backend="nccl")
+        device = torch.device(f"cuda:{rank % torch.cuda.device_count()}")
+        torch.cuda.set_device(device)
+    else:
+        rank, world_size = 0, 1
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # 🌟 UPGRADE 3: Hardware Acceleration for ResNet50 Convolutions
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = True
         
-        # Calculate raw confidence for each modality independently
-        raw_confidence = self.confidence_scorer(stacked_mods).squeeze(-1) # [B, Num_Modalities]
-        confidence = self.softmax(raw_confidence)
+    return rank, world_size, device
+
+
+def setup_logging(rank, output_dir):
+    """Setup logging."""
+    log_path = Path(output_dir) / "training.log"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    
+    if rank == 0:
+        fh = logging.FileHandler(log_path)
+        fh.setLevel(logging.INFO)
         
-        # Calculate uncertainty for each modality independently
-        uncertainty = self.uncertainty_scorer(stacked_mods).squeeze(-1) # [B, Num_Modalities]
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
         
-        # Final combined reliability score
-        reliability = confidence * (1.0 - uncertainty)
+        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+        fh.setFormatter(formatter)
+        ch.setFormatter(formatter)
         
-        # Re-normalize so attention weights sum to 1
-        reliability = reliability / (reliability.sum(dim=-1, keepdim=True) + 1e-6)
-        return reliability, uncertainty
+        logger.addHandler(fh)
+        logger.addHandler(ch)
+    
+    return logger
 
 
-class AdvancedLLMBackbone(nn.Module):
-    """
-    Dual-layer LLM backbone.
-    🌟 UPGRADE 2: Strategic Layer Freezing to save VRAM and speed up training.
-    """
+def log_download_plan(logger, config):
+    """Log which LLMs and datasets will be downloaded on first run."""
+    llms = config.get("llm_downloads", ["roberta-large", "distilroberta-base"])
+    dataset_sources = config.get("cloud_sources", ["mine", "emoticon", "raza"])
+    profile = config.get("dataset_profile", "balanced")
 
-    def __init__(self, hidden_dim: int = 1024):
-        super().__init__()
-        self.hidden_dim = hidden_dim
+    logger.info("LLMs to auto-download (first run only, then cached): %s", ", ".join(llms))
+    logger.info("Dataset sources to auto-download: %s", ", ".join(dataset_sources))
+    logger.info("Dataset profile: %s", profile)
 
-        self.roberta = AutoModel.from_pretrained("roberta-large")
-        self.roberta_proj = nn.Linear(1024, hidden_dim)
+    if profile in {"large_20gb", "ultra_30gb"}:
+        logger.info("Large dataset mode enabled: expected cache usage ~20-30GB on first run.")
 
-        self.distilroberta = AutoModel.from_pretrained("distilroberta-base")
-        self.distilroberta_proj = nn.Linear(768, hidden_dim)
 
-        # 🌟 VRAM OPTIMIZATION: Freeze the bottom 16 layers of RoBERTa (out of 24)
-        # It already knows grammar; it only needs to fine-tune the top layers for emotions.
-        if hasattr(self.roberta, "encoder"):
-            for layer in self.roberta.encoder.layer[:16]:
-                for param in layer.parameters():
-                    param.requires_grad = False
-                    
-        # Freeze the bottom 4 layers of DistilRoBERTa (out of 6)
-        if hasattr(self.distilroberta, "encoder"):
-            for layer in self.distilroberta.encoder.layer[:4]:
-                for param in layer.parameters():
-                    param.requires_grad = False
+# ═══════════════════════════════════════════════════════════════════════════
+# TRAINING FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
 
-        self.fusion_gate = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.Sigmoid(),
+def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch, fp16=True):
+    """Train one epoch with memory-safe Mixed Precision and Vision Integration."""
+    model.train()
+    total_loss = 0.0
+    
+    scaler = torch.amp.GradScaler('cuda') if fp16 else None
+    
+    for batch_idx, batch in enumerate(train_loader):
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+        emotion_labels = batch["emotion_labels"].to(device)
+        intention_labels = batch["intention_labels"].to(device)
+        action_labels = batch["action_labels"].to(device)
+        
+        # 🌟 Fetching the raw images!
+        images = batch.get("images", None)
+        if images is not None: images = images.to(device)
+        
+        # 🌟 UPGRADE 4: set_to_none=True destroys memory blocks instead of filling with zeros. (Saves VRAM & Time)
+        optimizer.zero_grad(set_to_none=True)
+
+        if fp16:
+            with torch.amp.autocast('cuda'):
+                model_output = model(input_ids, attention_mask, images=images)
+                loss_dict = criterion(
+                    emotion_logits=model_output["emotion_logits"],
+                    intention_logits=model_output["intention_logits"],
+                    action_logits=model_output["action_logits"],
+                    emotion_labels=emotion_labels,
+                    intention_labels=intention_labels,
+                    action_labels=action_labels,
+                )
+                loss = loss_dict["total_loss"]
+            
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
+            # 🌟 UPGRADE 2: Safe Scheduler Stepping
+            # Prevents PyTorch desync warning if scaler skips a step due to exploding gradients
+            scale_before = scaler.get_scale()
+            scaler.step(optimizer)
+            scaler.update()
+            scale_after = scaler.get_scale()
+            
+            if scale_before <= scale_after:
+                scheduler.step()
+
+        else:
+            model_output = model(input_ids, attention_mask, images=images)
+            loss_dict = criterion(
+                emotion_logits=model_output["emotion_logits"],
+                intention_logits=model_output["intention_logits"],
+                action_logits=model_output["action_logits"],
+                emotion_labels=emotion_labels,
+                intention_labels=intention_labels,
+                action_labels=action_labels,
+            )
+            loss = loss_dict["total_loss"]
+            
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            scheduler.step()
+        
+        total_loss += loss.item()
+        
+        if rank == 0 and batch_idx % 10 == 0:
+            avg_loss = total_loss / (batch_idx + 1)
+            logger.info(f"Epoch {epoch} | Batch {batch_idx}/{len(train_loader)} | Loss: {loss.item():.4f} | Avg: {avg_loss:.4f}")
+    
+    return total_loss / len(train_loader)
+
+
+def evaluate_one_epoch(model, val_loader, device, rank, logger):
+    """Evaluate one epoch."""
+    model.eval()
+    all_emotion_preds = []
+    all_emotion_labels = []
+    all_intention_preds = []
+    all_intention_labels = []
+    all_action_preds = []
+    all_action_labels = []
+    
+    with torch.no_grad():
+        for batch in val_loader:
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            emotion_labels = batch["emotion_labels"].to(device)
+            intention_labels = batch["intention_labels"].to(device)
+            action_labels = batch["action_labels"].to(device)
+            
+            # 🌟 Fetching the raw images!
+            images = batch.get("images", None)
+            if images is not None: images = images.to(device)
+            
+            model_output = model(input_ids, attention_mask, images=images)
+            
+            emotion_preds = torch.argmax(model_output["emotion_logits"], dim=1)
+            intention_preds = (torch.sigmoid(model_output["intention_logits"]) > 0.5).long()
+            action_preds = (torch.sigmoid(model_output["action_logits"]) > 0.5).long()
+            
+            # 🌟 CRITICAL FIX: Keeping them as PyTorch Tensors for eval.py
+            all_emotion_preds.append(emotion_preds)
+            all_emotion_labels.append(emotion_labels)
+            all_intention_preds.append(intention_preds)
+            all_intention_labels.append(intention_labels)
+            all_action_preds.append(action_preds)
+            all_action_labels.append(action_labels)
+    
+    # 🌟 CRITICAL FIX: Concatenating Tensors instead of Numpy Arrays
+    emotion_preds = torch.cat(all_emotion_preds, dim=0)
+    emotion_labels = torch.cat(all_emotion_labels, dim=0)
+    intention_preds = torch.cat(all_intention_preds, dim=0)
+    intention_labels = torch.cat(all_intention_labels, dim=0)
+    action_preds = torch.cat(all_action_preds, dim=0)
+    action_labels = torch.cat(all_action_labels, dim=0)
+    
+    metrics = evaluate_tritask(
+        emotion_preds, emotion_labels,
+        intention_preds, intention_labels,
+        action_preds, action_labels
+    )
+    
+    if rank == 0:
+        logger.info(f"Validation - Emotion Acc: {metrics['emotion_accuracy']:.4f}")
+        logger.info(f"Validation - Intention F1: {metrics['intention_micro_f1']:.4f}")
+        logger.info(f"Validation - Action F1: {metrics['action_micro_f1']:.4f}")
+    
+    return metrics
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# MAIN TRAINING LOOP
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_seed(seed, config, output_dir, rank, world_size, device, logger):
+    """Run training for one seed."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    
+    seed_dir = Path(output_dir) / f"seed_{seed}"
+    seed_dir.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"[Seed {seed}] Starting training...")
+    
+    train_loader, val_loader, test_loader = get_cloud_dataloaders(
+        batch_size=config.get("batch_size", 32),
+        eval_batch_size=config.get("eval_batch_size", 64),
+        num_workers=config.get("num_workers", 4),
+        max_rows_per_source=config.get("max_rows_per_source", 5000),
+        distributed=(world_size > 1),
+        sources=config.get("cloud_sources", ["mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"]),
+        dataset_profile=config.get("dataset_profile", "balanced"),
+        cache_dir=config.get("hf_cache_dir"),
+        mine_gdrive_root=config.get("mine_gdrive_root"),
+    )
+    
+    model = AdvancedBEARModel(hidden_dim=1024)
+    model = model.to(device)
+    
+    if world_size > 1:
+        model = DDP(model, device_ids=[rank])
+    
+    criterion = MultiTaskLoss(
+        emotion_weight=config.get("emotion_weight", 1.0),
+        intention_weight=config.get("intention_weight", 1.2),
+        action_weight=config.get("action_weight", 1.0),
+    )
+    
+    optimizer = AdamW(
+        model.parameters(),
+        lr=config.get("learning_rate", 2e-5),
+        weight_decay=config.get("weight_decay", 0.01)
+    )
+    
+    total_steps = len(train_loader) * config.get("epochs", 4)
+    
+    # 🌟 UPGRADE 1 APPLIED: Switched to Cosine Annealing with Warmup
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=int(total_steps * config.get("warmup_fraction", 0.1)),
+        num_training_steps=total_steps
+    )
+    
+    best_loss = float('inf')
+    seed_metrics = []
+    
+    for epoch in range(config.get("epochs", 4)):
+        train_loss = train_one_epoch(
+            model, train_loader, criterion, optimizer, scheduler, device, rank, logger, epoch+1, fp16=config.get("fp16", True)
         )
-        self.layer_norm = nn.LayerNorm(hidden_dim)
-
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
-        roberta_out = self.roberta(input_ids=input_ids, attention_mask=attention_mask)
-        roberta_cls = roberta_out.last_hidden_state[:, 0, :]
-        roberta_embed = self.roberta_proj(roberta_cls)
-
-        distilroberta_out = self.distilroberta(input_ids=input_ids, attention_mask=attention_mask)
-        distilroberta_cls = distilroberta_out.last_hidden_state[:, 0, :]
-        distilroberta_embed = self.distilroberta_proj(distilroberta_cls)
-
-        combined = torch.cat([roberta_embed, distilroberta_embed], dim=-1)
-        gate = self.fusion_gate(combined)
-        fused = gate * roberta_embed + (1.0 - gate) * distilroberta_embed
-        return self.layer_norm(fused)
-
-
-class AdvancedTriTaskHead(nn.Module):
-    """
-    Task heads for emotion, intention, and action.
-    """
-
-    def __init__(self, hidden_dim: int = 1024, num_emotion: int = 11, num_intention: int = 20, num_action: int = 15):
-        super().__init__()
-        self.shared_encoder = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(), nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim), nn.LayerNorm(hidden_dim), nn.GELU(), nn.Dropout(0.2),
-        )
-
-        self.emotion_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim // 2, num_emotion),
-        )
-        self.intention_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim // 2, num_intention),
-        )
-        self.action_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2), nn.GELU(), nn.Dropout(0.1), nn.Linear(hidden_dim // 2, num_action),
-        )
-
-    def forward(self, fused_embed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        shared = self.shared_encoder(fused_embed)
-        emotion_logits = self.emotion_head(shared)
-        intention_logits = self.intention_head(shared)
-        action_logits = self.action_head(shared)
-        return emotion_logits, intention_logits, action_logits
+        
+        val_metrics = evaluate_one_epoch(model, val_loader, device, rank, logger)
+        
+        if rank == 0:
+            seed_metrics.append({"epoch": epoch + 1, "train_loss": train_loss, **val_metrics})
+            
+            if train_loss < best_loss:
+                best_loss = train_loss
+                checkpoint_path = seed_dir / "best_model.pt"
+                torch.save(model.state_dict() if not isinstance(model, DDP) else model.module.state_dict(), checkpoint_path)
+                logger.info(f"[Seed {seed}] Saved best model at epoch {epoch+1}")
+    
+    if rank == 0:
+        test_metrics = evaluate_one_epoch(model, test_loader, device, rank, logger)
+        
+        logger.info(f"[Seed {seed}] FINAL TEST RESULTS:")
+        logger.info(f"  Test Emotion Accuracy: {test_metrics['emotion_accuracy']:.4f}")
+        logger.info(f"  Test Intention F1: {test_metrics['intention_micro_f1']:.4f}")
+        logger.info(f"  Test Action F1: {test_metrics['action_micro_f1']:.4f}")
+        
+        with open(seed_dir / "metrics.json", 'w') as f:
+            json.dump({"epochs": seed_metrics, "test": test_metrics}, f, indent=2)
+    
+    return seed_metrics
 
 
-class AdvancedBEARModel(nn.Module):
-    """
-    Advanced multimodal BEAR model.
-    Modalities: Text, Images, Audio (Placeholder), Video (Placeholder)
-    """
-
-    def __init__(self, hidden_dim: int = 1024, use_pretrained_vision: bool = True):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-
-        self.text_backbone = AdvancedLLMBackbone(hidden_dim)
-        self.text_encoder = AdvancedModalityEncoder(hidden_dim, hidden_dim)
-
-        resnet = self._build_resnet50(use_pretrained_vision)
-        for param in resnet.parameters():
-            param.requires_grad = False
-        self.vision_backbone = nn.Sequential(*list(resnet.children())[:-1])  # [B, 2048, 1, 1]
-        self.image_encoder = AdvancedModalityEncoder(2048, hidden_dim)
-
-        self.audio_encoder = AdvancedModalityEncoder(512, hidden_dim)
-        self.video_encoder = AdvancedModalityEncoder(1024, hidden_dim)
-
-        self.reliability_module = AdvancedReliabilityModule(hidden_dim)
-        self.fusion = DualLayerAttention(hidden_dim, num_heads=16)
-        self.task_heads = AdvancedTriTaskHead(hidden_dim, num_emotion=11, num_intention=20, num_action=15)
-        self.temperature = nn.Parameter(torch.ones(1))
-
-    @staticmethod
-    def _build_resnet50(use_pretrained_vision: bool) -> nn.Module:
+def main():
+    parser = argparse.ArgumentParser(description="BMVC 2026 Advanced Multimodal Training")
+    parser.add_argument("--config", type=str, default="configs/multimodal_cloud.json")
+    parser.add_argument("--output-dir", type=str, default="checkpoints/results-final")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--seeds", type=int, nargs="+", default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
+    parser.add_argument("--max-rows-per-source", type=int, default=None)
+    parser.add_argument("--dataset-profile", type=str, default=None, choices=["balanced", "large_20gb", "ultra_30gb"])
+    
+    args = parser.parse_args()
+    rank, world_size, device = setup_distributed()
+    
+    with open(args.config, 'r') as f: config = json.load(f)
+    
+    if args.epochs is not None: config["epochs"] = args.epochs
+    if args.batch_size is not None: config["batch_size"] = args.batch_size
+    if args.seeds is not None: config["seeds"] = args.seeds
+    if args.num_workers is not None: config["num_workers"] = args.num_workers
+    if args.max_rows_per_source is not None: config["max_rows_per_source"] = args.max_rows_per_source
+    if args.dataset_profile is not None: config["dataset_profile"] = args.dataset_profile
+    
+    logger = setup_logging(rank, args.output_dir)
+    
+    if rank == 0:
+        logger.info("╔════════════════════════════════════════════════════════════════════╗")
+        logger.info("║   BMVC 2026 - ADVANCED MULTIMODAL TRAINING                         ║")
+        logger.info("║   Dual-Layer LLM + ResNet50 Vision + Auto-PDF Generation           ║")
+        logger.info("╚════════════════════════════════════════════════════════════════════╝")
+    
+    all_seed_metrics = {}
+    for seed in config.get("seeds", [41, 42, 43]):
+        all_seed_metrics[seed] = run_seed(seed, config, args.output_dir, rank, world_size, device, logger)
+    
+    if rank == 0:
+        logger.info("╔════════════════════════════════════════════════════════════════════╗")
+        logger.info("║   TRAINING COMPLETE - AGGREGATING RESULTS                          ║")
+        logger.info("╚════════════════════════════════════════════════════════════════════╝")
+        
+        emotion_accs, intention_f1s, action_f1s = [], [], []
+        for seed in config.get("seeds", [41, 42, 43]):
+            metrics_path = Path(args.output_dir) / f"seed_{seed}" / "metrics.json"
+            if metrics_path.exists():
+                with open(metrics_path, 'r') as f:
+                    m = json.load(f)
+                    emotion_accs.append(m["test"]["emotion_accuracy"])
+                    intention_f1s.append(m["test"]["intention_micro_f1"])
+                    action_f1s.append(m["test"]["action_micro_f1"])
+        
+        summary = {
+            "test_emotion_accuracy_mean": float(np.mean(emotion_accs)),
+            "test_emotion_accuracy_std": float(np.std(emotion_accs)),
+            "test_intention_f1_mean": float(np.mean(intention_f1s)),
+            "test_intention_f1_std": float(np.std(intention_f1s)),
+            "test_action_f1_mean": float(np.mean(action_f1s)),
+            "test_action_f1_std": float(np.std(action_f1s)),
+            "config": config,
+        }
+        
+        summary_path = Path(args.output_dir) / "summary.json"
+        with open(summary_path, 'w') as f: json.dump(summary, f, indent=2)
+        
+        logger.info(f"✅ FINAL RESULTS (Mean ± Std across {len(config.get('seeds', []))} seeds):")
+        logger.info(f"   Test Emotion Accuracy: {summary['test_emotion_accuracy_mean']:.4f} ± {summary['test_emotion_accuracy_std']:.4f}")
+        logger.info(f"   Test Intention F1: {summary['test_intention_f1_mean']:.4f} ± {summary['test_intention_f1_std']:.4f}")
+        logger.info(f"   Test Action F1: {summary['test_action_f1_mean']:.4f} ± {summary['test_action_f1_std']:.4f}")
+        
         try:
-            if use_pretrained_vision:
-                weights = getattr(models, "ResNet50_Weights").IMAGENET1K_V2
-                return models.resnet50(weights=weights)
-            return models.resnet50(weights=None)
+            pdf_path = generate_research_report_pdf(args.output_dir, str(summary_path), args.config)
+            csv_path, latex_path = generate_raw_data_export(args.output_dir, str(summary_path))
+            logger.info(f"✅ PDF Report Generated: {pdf_path}")
         except Exception as e:
-            logger.warning("Falling back to uninitialized ResNet50 weights: %s", e)
-            try:
-                return models.resnet50(pretrained=False)
-            except TypeError:
-                return models.resnet50(weights=None)
+            pass # Keep it quiet if reportlab isn't installed
+        
+        try:
+            import sys
+            sys.path.insert(0, str(Path(__file__).parent))
+            from organize_paper_data import create_research_paper_folder
+            paper_output = Path(args.output_dir).parent / "research_paper_data"
+            create_research_paper_folder(args.output_dir, str(paper_output))
+            logger.info(f"✅ Research paper folder ready: {paper_output}")
+        except Exception as e:
+            pass # Keep it quiet
 
-    def _encode_images(self, images: Optional[torch.Tensor], device: torch.device, batch_size: int) -> torch.Tensor:
-        if images is None:
-            return torch.zeros(batch_size, self.hidden_dim, device=device)
-        if images.dim() != 4:
-            raise ValueError(f"Expected images with shape [B, C, H, W], got {tuple(images.shape)}")
+    # 🌟 CLEANUP: Destroy the process group to prevent memory leaks across multi-GPU setups
+    if world_size > 1:
+        dist.destroy_process_group()
 
-        with torch.no_grad():
-            img_feats = self.vision_backbone(images).flatten(1)  # [B, 2048]
-
-        image_embed = self.image_encoder(img_feats)
-        image_present_mask = (images.abs().sum(dim=(1, 2, 3)) > 0).float().unsqueeze(1)
-        image_embed = image_embed * image_present_mask
-        return image_embed
-
-    def forward(
-        self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        images: Optional[torch.Tensor] = None,
-        audio_features: Optional[torch.Tensor] = None,
-        video_features: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
-        device = input_ids.device
-        batch_size = input_ids.size(0)
-
-        text_embed = self.text_backbone(input_ids, attention_mask)
-        text_embed = self.text_encoder(text_embed)
-
-        # 🌟 Initialize Modality List for Independent Scoring
-        modalities: list[torch.Tensor] = [text_embed]
-
-        image_embed = self._encode_images(images, device=device, batch_size=batch_size)
-        modalities.append(image_embed)
-
-        if audio_features is not None:
-            audio_embed = self.audio_encoder(audio_features)
-        else:
-            audio_embed = torch.zeros(batch_size, self.hidden_dim, device=device)
-        modalities.append(audio_embed)
-
-        if video_features is not None:
-            video_embed = self.video_encoder(video_features)
-        else:
-            video_embed = torch.zeros(batch_size, self.hidden_dim, device=device)
-        modalities.append(video_embed)
-
-        # 🌟 Pass all modalities independently into the Reliability Module
-        reliability_scores, uncertainties = self.reliability_module(modalities)
-
-        fused_embed = self.fusion(modalities, reliability_scores)
-        emotion_logits, intention_logits, action_logits = self.task_heads(fused_embed)
-
-        temperature = torch.clamp(self.temperature, min=1e-3)
-        emotion_logits = emotion_logits / temperature
-        intention_logits = intention_logits / temperature
-        action_logits = action_logits / temperature
-
-        return {
-            "emotion_logits": emotion_logits,
-            "intention_logits": intention_logits,
-            "action_logits": action_logits,
-            "reliability_scores": reliability_scores,
-            "uncertainties": uncertainties,
-            "fused_embed": fused_embed,
-            "text_embed": text_embed,
-            "image_embed": image_embed,
-        }
-
-    @staticmethod
-    def get_predictions(model_output: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        return {
-            "emotion_preds": torch.argmax(model_output["emotion_logits"], dim=1),
-            "intention_preds": (torch.sigmoid(model_output["intention_logits"]) > 0.5).long(),
-            "action_preds": (torch.sigmoid(model_output["action_logits"]) > 0.5).long(),
-        }
+if __name__ == "__main__":
+    main()
