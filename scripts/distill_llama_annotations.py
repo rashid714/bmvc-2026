@@ -2,7 +2,7 @@
 """
 BMVC 2026 - Elite Offline Knowledge Distillation
 Teacher Model: Meta Llama 3.2 11B Vision-Instruct
-Upgrades: Chain-of-Thought Reasoning, Auto-Retry Logic, Local Model Caching
+Upgrades: Image-Only Fallback, Chain-of-Thought, Auto-Retry, Local Model Caching
 """
 
 import os
@@ -28,7 +28,7 @@ DATA_DIR = PROJECT_ROOT / "data" / "mine_gdrive"
 OUTPUT_JSON = PROJECT_ROOT / "data" / "distilled_annotations.json"
 LOG_FILE = PROJECT_ROOT / "data" / "distillation.log"
 
-# Model Cache Path (Forces Hugging Face to download the 11B model HERE, not in hidden system folders)
+# Model Cache Path (Forces Hugging Face to download the 11B model HERE)
 MODEL_CACHE_DIR = PROJECT_ROOT / "models" / "hf_hub"
 
 # Create all necessary folders immediately
@@ -61,7 +61,7 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 
 # ==============================================================================
-# 2. AUTO-DATA LOCATOR
+# 2. AUTO-DATA LOCATOR (WITH IMAGE-ONLY FALLBACK)
 # ==============================================================================
 def load_real_dataset(data_dir: Path):
     dataset_paths = []
@@ -70,40 +70,59 @@ def load_real_dataset(data_dir: Path):
     json_files = list(data_dir.rglob("metadata.json"))
     csv_files = list(data_dir.rglob("dataset.csv"))
     
-    if not json_files and not csv_files:
-        raise FileNotFoundError(f"❌ No metadata.json or dataset.csv found in {data_dir}")
+    # SCENARIO A: Text mappings exist
+    if json_files or csv_files:
+        for json_path in json_files:
+            with open(json_path, 'r', encoding='utf-8') as f:
+                for item in json.load(f):
+                    img_path = json_path.parent / item["image_file"]
+                    dataset_paths.append({
+                        "id": str(item.get("id", len(dataset_paths))),
+                        "image_path": str(img_path),
+                        "text": item.get("text", "")
+                    })
 
-    for json_path in json_files:
-        with open(json_path, 'r', encoding='utf-8') as f:
-            for item in json.load(f):
-                img_path = json_path.parent / item["image_file"]
-                dataset_paths.append({
-                    "id": str(item.get("id", len(dataset_paths))),
-                    "image_path": str(img_path),
-                    "text": item.get("text", "")
-                })
+        for csv_path in csv_files:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                for row in csv.DictReader(f):
+                    img_path = csv_path.parent / row["image_file"]
+                    dataset_paths.append({
+                        "id": str(row.get("id", len(dataset_paths))),
+                        "image_path": str(img_path),
+                        "text": row.get("text", "")
+                    })
+        print(f"✅ Loaded {len(dataset_paths)} multimodal samples with text maps.")
+    
+    # SCENARIO B: No text maps found -> Switch to IMAGE-ONLY mode
+    else:
+        print("⚠️ No metadata.json or dataset.csv found. Switching to IMAGE-ONLY fallback mode.")
+        logging.info("Initiating Image-Only Fallback Mode.")
+        
+        image_extensions = ('*.jpg', '*.jpeg', '*.png')
+        image_files = []
+        for ext in image_extensions:
+            image_files.extend(data_dir.rglob(ext))
+            
+        if not image_files:
+            raise FileNotFoundError(f"❌ Could not find ANY images (.jpg, .png) in {data_dir} or its subfolders!")
+            
+        for idx, img_path in enumerate(image_files):
+            dataset_paths.append({
+                "id": f"img_{idx}",
+                "image_path": str(img_path),
+                "text": "Analyze the visual expression and body language in this image."
+            })
+        print(f"✅ Loaded {len(dataset_paths)} raw images for visual-only distillation.")
 
-    for csv_path in csv_files:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            for row in csv.DictReader(f):
-                img_path = csv_path.parent / row["image_file"]
-                dataset_paths.append({
-                    "id": str(row.get("id", len(dataset_paths))),
-                    "image_path": str(img_path),
-                    "text": row.get("text", "")
-                })
-
-    print(f"✅ Loaded {len(dataset_paths)} multimodal samples.")
     return dataset_paths
 
 # ==============================================================================
-# 3. LLAMA MODEL (WITH LOCAL CACHING) & CHAIN-OF-THOUGHT PROMPTING
+# 3. LLAMA MODEL & CHAIN-OF-THOUGHT PROMPTING
 # ==============================================================================
 def load_teacher_model():
     print(f"🧠 Downloading/Loading Llama 3.2 11B into: {MODEL_CACHE_DIR}")
     model_id = "meta-llama/Llama-3.2-11B-Vision-Instruct"
     
-    # cache_dir ensures the model saves exactly where you want it
     model = MllamaForConditionalGeneration.from_pretrained(
         model_id,
         torch_dtype=torch.bfloat16,
@@ -114,7 +133,7 @@ def load_teacher_model():
     return model, processor
 
 def build_cot_prompt(user_text):
-    """CHAIN OF THOUGHT UPGRADE: Forces Llama to think logically to guarantee 80%+ accuracy."""
+    """CHAIN OF THOUGHT UPGRADE: Forces Llama to think logically."""
     system_prompt = (
         "You are an elite psychological annotator for a computer vision research paper.\n"
         "Analyze the image and text. You must output ONLY a valid JSON object. No markdown, no chat.\n\n"
@@ -128,7 +147,7 @@ def build_cot_prompt(user_text):
         "Example 2 (Happy face + 'This coffee is amazing.'):\n"
         "{\"reasoning\": \"The user is displaying joy and praising the product, requiring no intervention.\", \"intention_classes\": [0, 2], \"action_classes\": [0]}\n\n"
         "--- REAL TASK ---\n"
-        f"Text: \"{user_text}\"\n"
+        f"Text to consider (if applicable): \"{user_text}\"\n"
         "Output ONLY the JSON object:"
     )
     
@@ -168,12 +187,10 @@ def generate_annotations(model, processor, dataset_paths):
         prompt = processor.apply_chat_template(conversation, add_generation_prompt=True)
         inputs = processor(image, prompt, add_special_tokens=False, return_tensors="pt").to(model.device)
 
-        # 🔄 AUTO-RETRY LOGIC: Give the model 3 tries to get the JSON perfect
         max_retries = 3
         success = False
         
         for attempt in range(max_retries):
-            # Slightly increase "creativity" temperature if it fails the first time to break loops
             temp = 0.1 if attempt == 0 else 0.3
             
             output_ids = model.generate(**inputs, max_new_tokens=150, temperature=temp, do_sample=(temp > 0.1))
@@ -184,25 +201,24 @@ def generate_annotations(model, processor, dataset_paths):
                 clean_text = response_text.replace("```json", "").replace("```", "").strip()
                 parsed_json = json.loads(clean_text)
                 
-                # Validation: Make sure the required keys exist
                 if "intention_classes" in parsed_json and "action_classes" in parsed_json:
                     global_results.append({
                         "id": sample_id,
                         "image_path": image_path,
                         "text": user_text,
-                        "reasoning_log": parsed_json.get("reasoning", ""), # Save the CoT reasoning for your paper!
+                        "reasoning_log": parsed_json.get("reasoning", ""),
                         "intention_labels": parsed_json["intention_classes"],
                         "action_labels": parsed_json["action_classes"]
                     })
                     success = True
-                    break # Break out of the retry loop, it worked!
+                    break 
             except json.JSONDecodeError:
-                pass # Failed to parse, the loop will try again
+                pass 
         
         if not success:
             logging.error(f"Sample {sample_id} failed after {max_retries} attempts. Output: {response_text}")
 
-        # Save State and Clear Memory every 20 images (since CoT uses slightly more VRAM)
+        # Save State and Clear Memory every 20 images
         if len(global_results) % 20 == 0:
             save_results_safely()
             torch.cuda.empty_cache()
@@ -216,9 +232,11 @@ if __name__ == "__main__":
     print("🎓 BMVC 2026 - Elite Llama 3.2 Knowledge Distillation")
     print("="*70)
     
-    real_dataset = load_real_dataset(data_dir=DATA_DIR)
-    if len(real_dataset) > 0:
-        teacher_model, text_processor = load_teacher_model()
-        generate_annotations(teacher_model, text_processor, real_dataset)
-    else:
-        print("❌ No images found. Check your data folders.")
+    try:
+        real_dataset = load_real_dataset(data_dir=DATA_DIR)
+        if len(real_dataset) > 0:
+            teacher_model, text_processor = load_teacher_model()
+            generate_annotations(teacher_model, text_processor, real_dataset)
+    except Exception as e:
+        print(f"\n❌ FATAL ERROR: {e}")
+        logging.error(f"Fatal execution error: {e}")
