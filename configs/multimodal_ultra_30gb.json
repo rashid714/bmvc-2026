@@ -3,8 +3,8 @@
   "batch_size": 32,
   "eval_batch_size": 64,
   "learning_rate": 2e-5,
-  "weight_decay": 0.01,
-  "warmup_fraction": 0.1,
+  "weight_decay": 0.05,
+  "warmup_fraction": 0.2,
   "max_rows_per_source": 40000,
   "seeds": [41, 42, 43],
   "hidden_dim": 1024,
@@ -23,9 +23,18 @@
   "model_cache_dir": "models/hf_models",
   "hf_hub_cache_dir": "models/hf_hub",
   "mine_gdrive_root": "data/mine_gdrive",
-  "cloud_sources": ["goemotions", "dailydialog", "tweet_eval", "mine", "mine_gdrive", "emoticon", "raza", "coco"],
+  "cloud_sources": [
+    "llama_distilled", 
+    "mine", 
+    "goemotions", 
+    "dailydialog", 
+    "tweet_eval", 
+    "emoticon", 
+    "raza", 
+    "coco"
+  ],
   "llm_downloads": ["roberta-large", "distilroberta-base"],
-  "emotion_weight": 1.0,
-  "intention_weight": 1.2,
-  "action_weight": 1.0
+  "emotion_weight": 0.1,
+  "intention_weight": 8.0,
+  "action_weight": 5.0
 }
