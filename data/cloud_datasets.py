@@ -417,7 +417,7 @@ class MINEGoogleDriveDatasetLoader:
         except Exception as e: return []
 
 # ------------------------------------------------------------------------------
-# 5. Llama Distilled Loader & Synthetic fallback
+# 5. 🌟 CRITICAL FIX: The Llama Distilled Loader
 # ------------------------------------------------------------------------------
 class LlamaDistilledLoader:
     @staticmethod
@@ -486,7 +486,7 @@ class SyntheticMultimodalGenerator:
 # ------------------------------------------------------------------------------
 class UnifiedCloudDatasetBuilder:
     REGISTRY = {
-        "llama_distilled": LlamaDistilledLoader, # 🌟 ADDED LLAMA LOADER HERE
+        "llama_distilled": LlamaDistilledLoader, # 🌟 CRITICAL FIX: Registered LLAMA loader
         "kaggle_goemotions": KaggleGoEmotionsLoader, "kaggle_facial": KaggleFacialEmotionLoader, "kaggle_intent": KaggleIntentLoader,
         "hf_emotion": DairAiEmotionLoader, "hf_dailydialog": DailyDialogLoader, "hf_coco": MSCOCOCaptionsLoader, "mine_gdrive": MINEGoogleDriveDatasetLoader,
         "goemotions": KaggleGoEmotionsLoader, "tweet_eval": DairAiEmotionLoader, "dailydialog": DailyDialogLoader,
@@ -495,6 +495,7 @@ class UnifiedCloudDatasetBuilder:
 
     @staticmethod
     def build_multimodal_dataset(sources: Optional[List[str]] = None, splits: Optional[Dict[str, int]] = None, data_dir: Optional[str] = None, **kwargs) -> List[MultimodalSample]:
+        # 🌟 CRITICAL FIX: Llama is now the first default source
         if not sources: sources = ["llama_distilled", "mine", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
         if not splits: splits = {"train": 2000, "validation": 500}
 
@@ -522,7 +523,6 @@ class UnifiedCloudDatasetBuilder:
 # 7. PyTorch dataset and dataloaders
 # ------------------------------------------------------------------------------
 class CloudMultimodalDataset(Dataset):
-    # 🌟 IMPROVEMENT 1: Changed max_text_len from 512 to 128 for massive VRAM/Speed optimization
     def __init__(self, samples: List[MultimodalSample], tokenizer, max_text_len: int = 128, is_train: bool = False, text_dropout_prob: float = 0.2, image_dropout_prob: float = 0.1, word_dropout_prob: float = 0.05):
         self.samples = samples
         self.tokenizer = tokenizer
@@ -531,7 +531,7 @@ class CloudMultimodalDataset(Dataset):
         
         self.text_dropout_prob = text_dropout_prob
         self.image_dropout_prob = image_dropout_prob
-        self.word_dropout_prob = word_dropout_prob # 🌟 IMPROVEMENT 2: NLP Augmentation
+        self.word_dropout_prob = word_dropout_prob 
         
         if self.is_train:
             self.img_transform = T.Compose([
