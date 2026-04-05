@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BMVC 2026 - Advanced Multimodal Training
-Spotlight Version: Cosine Annealing, FP16 Safety Sync, Hardware Acceleration, and DDP Cleanup
+Spotlight Version: Focal Loss Engine, Macro F1, Dynamic Thresholds, Cosine Annealing, and DDP Cleanup
 Uses Dual-Layer LLM + ResNet50 Vision + Automatic PDF Report Generation
 """
 
@@ -31,7 +31,8 @@ from transformers import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 from models.advanced_multimodal_bear import AdvancedBEARModel
-from training.losses import MultiTaskLoss
+# 🌟 UPGRADE 2: Swapped to Focal MultiTaskLoss
+from training.losses import FocalMultiTaskLoss
 from training.eval import evaluate_tritask
 from data.cloud_datasets import get_cloud_dataloaders
 from training.pdf_report_generator import (
@@ -48,7 +49,6 @@ def setup_distributed() -> Tuple[int, int, int, torch.device]:
     Initialize distributed training if launched with torchrun.
     Returns: rank, world_size, local_rank, device
     """
-    # 🌟 UPGRADE 2: Hardware Acceleration for ResNet50 Convolutions
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
 
@@ -128,7 +128,7 @@ def log_download_plan(logger: logging.Logger, config: Dict[str, Any]) -> None:
     llms = config.get("llm_downloads", ["roberta-large", "distilroberta-base"])
     dataset_sources = config.get(
         "cloud_sources",
-        ["mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"],
+        ["llama_distilled", "mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"],
     )
     profile = config.get("dataset_profile", "balanced")
 
@@ -172,7 +172,6 @@ def train_one_epoch(
         if images is not None:
             images = images.to(device, non_blocking=True)
 
-        # 🌟 UPGRADE 3: set_to_none=True destroys memory blocks to save VRAM
         optimizer.zero_grad(set_to_none=True)
 
         if use_amp:
@@ -192,7 +191,6 @@ def train_one_epoch(
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             
-            # 🌟 UPGRADE 4: Safe FP16 Scheduler Stepping (prevents learning rate desync)
             scale_before = scaler.get_scale()
             scaler.step(optimizer)
             scaler.update()
@@ -278,21 +276,22 @@ def evaluate_one_epoch(
         total_loss += float(loss.item())
         num_batches += 1
 
-        emotion_preds = torch.argmax(model_output["emotion_logits"], dim=1)
-        intention_preds = (torch.sigmoid(model_output["intention_logits"]) > 0.5).long()
-        action_preds = (torch.sigmoid(model_output["action_logits"]) > 0.5).long()
-
-        all_emotion_preds.append(emotion_preds.cpu())
+        # 🌟 UPGRADE 3: Delegate the 0.4 threshold magic to evaluate_tritask
+        all_emotion_preds.append(model_output["emotion_logits"].cpu())
         all_emotion_labels.append(emotion_labels.cpu())
-        all_intention_preds.append(intention_preds.cpu())
+        
+        all_intention_preds.append(model_output["intention_logits"].cpu())
         all_intention_labels.append(intention_labels.cpu())
-        all_action_preds.append(action_preds.cpu())
+        
+        all_action_preds.append(model_output["action_logits"].cpu())
         all_action_labels.append(action_labels.cpu())
 
     emotion_preds = torch.cat(all_emotion_preds, dim=0)
     emotion_labels = torch.cat(all_emotion_labels, dim=0)
+    
     intention_preds = torch.cat(all_intention_preds, dim=0)
     intention_labels = torch.cat(all_intention_labels, dim=0)
+    
     action_preds = torch.cat(all_action_preds, dim=0)
     action_labels = torch.cat(all_action_labels, dim=0)
 
@@ -309,8 +308,9 @@ def evaluate_one_epoch(
     if rank == 0:
         logger.info("%s Loss: %.4f", split_name, avg_loss)
         logger.info("%s - Emotion Acc: %.4f", split_name, metrics["emotion_accuracy"])
-        logger.info("%s - Intention F1: %.4f", split_name, metrics["intention_micro_f1"])
-        logger.info("%s - Action F1: %.4f", split_name, metrics["action_micro_f1"])
+        # 🌟 UPGRADE 4: Log Macro F1 directly
+        logger.info("%s - Intention F1 (Macro): %.4f", split_name, metrics["intention_macro_f1"])
+        logger.info("%s - Action F1 (Macro): %.4f", split_name, metrics["action_macro_f1"])
 
     return avg_loss, metrics
 
@@ -329,7 +329,6 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
     seed_dir.mkdir(parents=True, exist_ok=True)
     logger.info("[Seed %s] Starting training...", seed)
 
-    # Make sure runtime env paths are visible to downstream loaders
     apply_runtime_env_from_config(config, logger)
 
     train_loader, val_loader, test_loader = get_cloud_dataloaders(
@@ -340,7 +339,7 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
         distributed=(world_size > 1),
         sources=config.get(
             "cloud_sources",
-            ["mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"],
+            ["llama_distilled", "mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"],
         ),
         data_dir=config.get("data_dir"),
     )
@@ -351,21 +350,21 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
 
-    criterion = MultiTaskLoss(
+    # 🌟 UPGRADE 5: Initialize the Focal MultiTask Loss
+    criterion = FocalMultiTaskLoss(
         emotion_weight=config.get("emotion_weight", 1.0),
-        intention_weight=config.get("intention_weight", 1.2),
-        action_weight=config.get("action_weight", 1.0),
+        intention_weight=config.get("intention_weight", 2.0), # Prioritize Intent
+        action_weight=config.get("action_weight", 2.0),       # Prioritize Action
     )
 
     optimizer = AdamW(
         model.parameters(),
-        lr=config.get("learning_rate", 2e-5),
+        lr=config.get("learning_rate", 1e-4), # 🌟 Adjusted for Focal Loss
         weight_decay=config.get("weight_decay", 0.01),
     )
 
     total_steps = max(1, len(train_loader) * config.get("epochs", 4))
     
-    # 🌟 UPGRADE 1 APPLIED: Cosine Annealing with Warmup
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
         num_warmup_steps=int(total_steps * config.get("warmup_fraction", 0.1)),
@@ -422,9 +421,6 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
                     val_loss,
                 )
 
-    # -------------------------------------------------------------------------
-    # IMPORTANT FIX: reload the best checkpoint before final test evaluation
-    # -------------------------------------------------------------------------
     checkpoint_path = seed_dir / "best_model.pt"
     if checkpoint_path.exists():
         model_to_load = model.module if isinstance(model, DDP) else model
@@ -447,8 +443,9 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
         logger.info("[Seed %s] FINAL TEST RESULTS:", seed)
         logger.info(" Test Loss: %.4f", test_loss)
         logger.info(" Test Emotion Accuracy: %.4f", test_metrics["emotion_accuracy"])
-        logger.info(" Test Intention F1: %.4f", test_metrics["intention_micro_f1"])
-        logger.info(" Test Action F1: %.4f", test_metrics["action_micro_f1"])
+        # 🌟 UPGRADE 6: Save and print the Macro F1s
+        logger.info(" Test Intention F1 (Macro): %.4f", test_metrics["intention_macro_f1"])
+        logger.info(" Test Action F1 (Macro): %.4f", test_metrics["action_macro_f1"])
 
         with open(seed_dir / "metrics.json", "w", encoding="utf-8") as f:
             json.dump(
@@ -503,7 +500,6 @@ def main() -> None:
 
     logger = setup_logging(rank, args.output_dir)
 
-    # Useful defaults
     config.setdefault("epochs", 4)
     config.setdefault("batch_size", 32)
     config.setdefault("eval_batch_size", 64)
@@ -512,13 +508,13 @@ def main() -> None:
     config.setdefault("seeds", [41, 42, 43])
     config.setdefault("fp16", True)
     config.setdefault("warmup_fraction", 0.1)
-    config.setdefault("learning_rate", 2e-5)
+    config.setdefault("learning_rate", 1e-4) # 🌟 Adjusted default learning rate
     config.setdefault("weight_decay", 0.01)
     config.setdefault("hidden_dim", 1024)
 
     if rank == 0:
         logger.info("╔════════════════════════════════════════════════════════════════════╗")
-        logger.info("║ BMVC 2026 - ADVANCED MULTIMODAL TRAINING                           ║")
+        logger.info("║ BMVC 2026 - ADVANCED MULTIMODAL TRAINING (FOCAL ENGINE)            ║")
         logger.info("║ Dual-Layer LLM + ResNet50 Vision + Auto-PDF Generation             ║")
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
         log_download_plan(logger, config)
@@ -538,8 +534,9 @@ def main() -> None:
                 with open(metrics_path, "r", encoding="utf-8") as f:
                     m = json.load(f)
                 emotion_accs.append(m["test"]["emotion_accuracy"])
-                intention_f1s.append(m["test"]["intention_micro_f1"])
-                action_f1s.append(m["test"]["action_micro_f1"])
+                # 🌟 UPGRADE 7: Aggregate Macro F1s
+                intention_f1s.append(m["test"]["intention_macro_f1"])
+                action_f1s.append(m["test"]["action_macro_f1"])
 
         summary = {
             "test_emotion_accuracy_mean": float(np.mean(emotion_accs)) if emotion_accs else 0.0,
@@ -562,12 +559,12 @@ def main() -> None:
             summary["test_emotion_accuracy_std"],
         )
         logger.info(
-            " Intention F1: %.4f ± %.4f",
+            " Intention F1 (Macro): %.4f ± %.4f",
             summary["test_intention_f1_mean"],
             summary["test_intention_f1_std"],
         )
         logger.info(
-            " Action F1: %.4f ± %.4f",
+            " Action F1 (Macro): %.4f ± %.4f",
             summary["test_action_f1_mean"],
             summary["test_action_f1_std"],
         )
@@ -587,7 +584,6 @@ def main() -> None:
         except Exception:
             pass
 
-    # 🌟 CRITICAL FIX: Properly destroy process group at the end for clean multi-GPU exit
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
         dist.destroy_process_group()
