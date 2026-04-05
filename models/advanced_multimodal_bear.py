@@ -7,6 +7,7 @@ Key fixes:
 - 🌟 VRAM Optimization: Strategically frozen bottom layers of dual-LLM backbone.
 - Proper class-level forward() method returning a dict.
 - Real image support via ResNet50 backbone.
+- 🌟 Fixed 0.5 Ghost Bug: get_predictions now supports dynamic 0.4 thresholding.
 """
 
 from __future__ import annotations
@@ -334,9 +335,13 @@ class AdvancedBEARModel(nn.Module):
         }
 
     @staticmethod
-    def get_predictions(model_output: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    def get_predictions(model_output: Dict[str, torch.Tensor], threshold: float = 0.4) -> Dict[str, torch.Tensor]:
+        """
+        Converts raw logits to final predictions.
+        Uses the 0.4 BMVC dynamic threshold by default for multi-label tasks.
+        """
         return {
             "emotion_preds": torch.argmax(model_output["emotion_logits"], dim=1),
-            "intention_preds": (torch.sigmoid(model_output["intention_logits"]) > 0.5).long(),
-            "action_preds": (torch.sigmoid(model_output["action_logits"]) > 0.5).long(),
+            "intention_preds": (torch.sigmoid(model_output["intention_logits"]) > threshold).long(),
+            "action_preds": (torch.sigmoid(model_output["action_logits"]) > threshold).long(),
         }
