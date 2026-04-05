@@ -2,13 +2,13 @@
   "epochs": 4,
   "batch_size": 32,
   "eval_batch_size": 64,
-  "learning_rate": 2e-5,
+  "learning_rate": 3e-5,
   "weight_decay": 0.05,
-  "warmup_fraction": 0.2,
-  "max_rows_per_source": 5000,
+  "warmup_fraction": 0.15,
+  "max_rows_per_source": 40000, 
   "seeds": [41, 42, 43],
   "text_backbone": "distilroberta-base",
-  "hidden_dim": 768,
+  "hidden_dim": 1024,
   "num_emotion_classes": 11,
   "num_intention_classes": 20,
   "num_action_classes": 15,
@@ -33,7 +33,7 @@
     "raza",
     "coco"
   ],
-  "emotion_weight": 0.1,
-  "intention_weight": 8.0,
-  "action_weight": 5.0
+  "emotion_weight": 1.0,
+  "intention_weight": 2.0,
+  "action_weight": 2.0
 }
