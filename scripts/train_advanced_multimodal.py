@@ -31,7 +31,7 @@ from transformers import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 from models.advanced_multimodal_bear import AdvancedBEARModel
-# 🌟 UPGRADE 2: Swapped to Focal MultiTaskLoss
+# 🌟 UPGRADE 2: Swapped to Focal MultiTaskLoss (Imported with alias to match your file)
 from training.losses import MultiTaskLoss as FocalMultiTaskLoss
 from training.eval import evaluate_tritask
 from data.cloud_datasets import get_cloud_dataloaders
@@ -276,7 +276,6 @@ def evaluate_one_epoch(
         total_loss += float(loss.item())
         num_batches += 1
 
-        # 🌟 UPGRADE 3: Delegate the 0.4 threshold magic to evaluate_tritask
         all_emotion_preds.append(model_output["emotion_logits"].cpu())
         all_emotion_labels.append(emotion_labels.cpu())
         
@@ -350,24 +349,24 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
 
-    # 🌟 UPGRADE 5: Initialize the Focal MultiTask Loss
+    # 🌟 UPGRADE 5: Initialize the Focal MultiTask Loss with 8.0 Intention Weight to force learning
     criterion = FocalMultiTaskLoss(
-        emotion_weight=config.get("emotion_weight", 1.0),
-        intention_weight=config.get("intention_weight", 2.0), # Prioritize Intent
-        action_weight=config.get("action_weight", 2.0),       # Prioritize Action
+        emotion_weight=0.1,    # Drastically reduced to prevent "lazy guessing"
+        intention_weight=8.0,  # Massive increase to force learning SOTA logic
+        action_weight=5.0,     # Increased to force learning SOTA logic
     )
 
     optimizer = AdamW(
         model.parameters(),
-        lr=config.get("learning_rate", 1e-4), # 🌟 Adjusted for Focal Loss
-        weight_decay=config.get("weight_decay", 0.01),
+        lr=2e-5,               # 🌟 Lowered from 1e-4 for stable Focal Loss convergence
+        weight_decay=0.05,     # Increased for better generalization
     )
 
     total_steps = max(1, len(train_loader) * config.get("epochs", 4))
     
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=int(total_steps * config.get("warmup_fraction", 0.1)),
+        num_warmup_steps=int(total_steps * 0.2), # 🌟 Increased to 20% warmup
         num_training_steps=total_steps,
     )
 
@@ -508,8 +507,8 @@ def main() -> None:
     config.setdefault("seeds", [41, 42, 43])
     config.setdefault("fp16", True)
     config.setdefault("warmup_fraction", 0.1)
-    config.setdefault("learning_rate", 1e-4) # 🌟 Adjusted default learning rate
-    config.setdefault("weight_decay", 0.01)
+    config.setdefault("learning_rate", 2e-5) # 🌟 Adjusted default learning rate
+    config.setdefault("weight_decay", 0.05)  # 🌟 Adjusted default weight decay
     config.setdefault("hidden_dim", 1024)
 
     if rank == 0:
