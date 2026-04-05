@@ -4,9 +4,8 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-
 class FocalLoss(nn.Module):
-    """Focal loss for better calibration and class imbalance handling."""
+    """Focal loss for single-label emotion classification."""
 
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
         super().__init__()
@@ -19,15 +18,31 @@ class FocalLoss(nn.Module):
         loss = self.alpha * (1 - p) ** self.gamma * ce_loss
         return loss.mean()
 
+# 🌟 THE BMVC 80% UPGRADE: Multi-Label Focal Loss
+class MultiLabelFocalLoss(nn.Module):
+    """Focal loss specifically designed for highly imbalanced multi-label arrays."""
+
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # BCEWithLogitsLoss expects float targets for multi-label
+        bce_loss = F.binary_cross_entropy_with_logits(inputs, targets.float(), reduction="none")
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        return focal_loss.mean()
+
 
 class MultiTaskLoss(nn.Module):
-    """Combines emotion, intention, action losses with adaptive weighting."""
+    """Combines emotion, intention, action losses using the Focal Engine."""
 
     def __init__(
         self,
         emotion_weight: float = 1.0,
-        intention_weight: float = 1.0,
-        action_weight: float = 1.0,
+        intention_weight: float = 2.0, # 🌟 Increased to force learning rare classes
+        action_weight: float = 2.0,    # 🌟 Increased to force learning rare classes
         use_focal: bool = True,
     ):
         super().__init__()
@@ -40,8 +55,9 @@ class MultiTaskLoss(nn.Module):
         else:
             self.emotion_loss_fn = nn.CrossEntropyLoss()
 
-        self.intention_loss_fn = nn.BCEWithLogitsLoss()
-        self.action_loss_fn = nn.BCEWithLogitsLoss()
+        # 🌟 Replaced standard BCE with Multi-Label Focal Loss
+        self.intention_loss_fn = MultiLabelFocalLoss(gamma=2.0)
+        self.action_loss_fn = MultiLabelFocalLoss(gamma=2.0)
 
     def forward(
         self,
