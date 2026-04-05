@@ -417,8 +417,64 @@ class MINEGoogleDriveDatasetLoader:
         except Exception as e: return []
 
 # ------------------------------------------------------------------------------
-# 5. Synthetic fallback
+# 5. Llama Distilled Loader & Synthetic fallback
 # ------------------------------------------------------------------------------
+class LlamaDistilledLoader:
+    @staticmethod
+    def load_split(split: str = "train", limit: Optional[int] = None, data_dir: Optional[str] = None, dataset_paths: Optional[Dict[str, Path]] = None) -> List[MultimodalSample]:
+        try:
+            json_path = get_data_root(data_dir) / "distilled_annotations.json"
+            if not json_path.exists():
+                logger.warning(f"⚠️ Llama Distilled JSON not found at {json_path}")
+                return []
+
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Split logic to avoid data leakage
+            n_total = len(data)
+            n_train = int(0.8 * n_total)
+            n_val = int(0.1 * n_total)
+
+            if split == "train": data = data[:n_train]
+            elif split == "validation": data = data[n_train:n_train+n_val]
+            else: data = data[n_train+n_val:]
+
+            if limit: data = data[:limit]
+
+            samples: List[MultimodalSample] = []
+            repo_root = get_repo_root()
+            
+            for item in data:
+                # Resolve the image path safely
+                raw_img_path = item.get("image_path", "")
+                final_img_path = None
+                if raw_img_path:
+                    potential_path = Path(raw_img_path)
+                    if not potential_path.is_absolute():
+                        potential_path = repo_root / raw_img_path
+                    if potential_path.exists():
+                        final_img_path = str(potential_path.resolve())
+
+                # Grab the Llama labels (Arrays of ints)
+                intent_lbl = safe_list_of_ints(item.get("intention_labels", [0]))
+                action_lbl = safe_list_of_ints(item.get("action_labels", [0]))
+
+                samples.append(MultimodalSample(
+                    text=str(item.get("text", "")),
+                    image_path=final_img_path,
+                    emotion_label=4, # Default neutral, multi-labels handle the heavy lifting
+                    intention_labels=intent_lbl,
+                    action_labels=action_lbl,
+                    source_dataset="Llama_Distilled_Silver_Standard"
+                ))
+                
+            logger.info(f"✅ Loaded {len(samples)} Llama Distilled samples for {split} split.")
+            return samples
+        except Exception as e:
+            logger.error(f"❌ Failed to load Llama Distilled Data: {e}")
+            return []
+
 class SyntheticMultimodalGenerator:
     @staticmethod
     def generate(num_samples: int = 100) -> List[MultimodalSample]:
@@ -430,6 +486,7 @@ class SyntheticMultimodalGenerator:
 # ------------------------------------------------------------------------------
 class UnifiedCloudDatasetBuilder:
     REGISTRY = {
+        "llama_distilled": LlamaDistilledLoader, # 🌟 ADDED LLAMA LOADER HERE
         "kaggle_goemotions": KaggleGoEmotionsLoader, "kaggle_facial": KaggleFacialEmotionLoader, "kaggle_intent": KaggleIntentLoader,
         "hf_emotion": DairAiEmotionLoader, "hf_dailydialog": DailyDialogLoader, "hf_coco": MSCOCOCaptionsLoader, "mine_gdrive": MINEGoogleDriveDatasetLoader,
         "goemotions": KaggleGoEmotionsLoader, "tweet_eval": DairAiEmotionLoader, "dailydialog": DailyDialogLoader,
@@ -438,7 +495,7 @@ class UnifiedCloudDatasetBuilder:
 
     @staticmethod
     def build_multimodal_dataset(sources: Optional[List[str]] = None, splits: Optional[Dict[str, int]] = None, data_dir: Optional[str] = None, **kwargs) -> List[MultimodalSample]:
-        if not sources: sources = ["mine", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
+        if not sources: sources = ["llama_distilled", "mine", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
         if not splits: splits = {"train": 2000, "validation": 500}
 
         dataset_paths = discover_local_datasets(data_dir)
