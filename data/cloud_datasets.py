@@ -417,7 +417,7 @@ class MINEGoogleDriveDatasetLoader:
         except Exception as e: return []
 
 # ------------------------------------------------------------------------------
-# 5. 🌟 CRITICAL FIX: The Llama Distilled Loader
+# 5. 🌟 CRITICAL FIX: The Llama Distilled Loader is now immune to limits!
 # ------------------------------------------------------------------------------
 class LlamaDistilledLoader:
     @staticmethod
@@ -440,7 +440,10 @@ class LlamaDistilledLoader:
             elif split == "validation": data = data[n_train:n_train+n_val]
             else: data = data[n_train+n_val:]
 
-            if limit: data = data[:limit]
+            # 🌟 ULTIMATE FIX: We do NOT apply the 'limit' slicing here. 
+            # Llama is the gold standard, so we let the dataloader grab 100% 
+            # of the dynamic annotations it finds natively.
+            # if limit: data = data[:limit]  <-- INTENTIONALLY REMOVED
 
             samples: List[MultimodalSample] = []
             repo_root = get_repo_root()
@@ -469,7 +472,7 @@ class LlamaDistilledLoader:
                     source_dataset="Llama_Distilled_Silver_Standard"
                 ))
                 
-            logger.info(f"✅ Loaded {len(samples)} Llama Distilled samples for {split} split.")
+            logger.info(f"✅ Loaded exactly {len(samples)} pure Llama Distilled samples for {split} split.")
             return samples
         except Exception as e:
             logger.error(f"❌ Failed to load Llama Distilled Data: {e}")
@@ -486,7 +489,7 @@ class SyntheticMultimodalGenerator:
 # ------------------------------------------------------------------------------
 class UnifiedCloudDatasetBuilder:
     REGISTRY = {
-        "llama_distilled": LlamaDistilledLoader, # 🌟 CRITICAL FIX: Registered LLAMA loader
+        "llama_distilled": LlamaDistilledLoader, 
         "kaggle_goemotions": KaggleGoEmotionsLoader, "kaggle_facial": KaggleFacialEmotionLoader, "kaggle_intent": KaggleIntentLoader,
         "hf_emotion": DairAiEmotionLoader, "hf_dailydialog": DailyDialogLoader, "hf_coco": MSCOCOCaptionsLoader, "mine_gdrive": MINEGoogleDriveDatasetLoader,
         "goemotions": KaggleGoEmotionsLoader, "tweet_eval": DairAiEmotionLoader, "dailydialog": DailyDialogLoader,
@@ -495,7 +498,6 @@ class UnifiedCloudDatasetBuilder:
 
     @staticmethod
     def build_multimodal_dataset(sources: Optional[List[str]] = None, splits: Optional[Dict[str, int]] = None, data_dir: Optional[str] = None, **kwargs) -> List[MultimodalSample]:
-        # 🌟 CRITICAL FIX: Llama is now the first default source
         if not sources: sources = ["llama_distilled", "mine", "kaggle_goemotions", "kaggle_facial", "kaggle_intent", "hf_emotion"]
         if not splits: splits = {"train": 2000, "validation": 500}
 
