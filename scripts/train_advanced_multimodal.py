@@ -32,7 +32,7 @@ hf_logging.set_verbosity_error()
 
 from models.advanced_multimodal_bear import AdvancedBEARModel
 # 🌟 UPGRADE 2: Swapped to Focal MultiTaskLoss
-from training.losses import FocalMultiTaskLoss
+from training.losses import MultiTaskLoss as FocalMultiTaskLoss
 from training.eval import evaluate_tritask
 from data.cloud_datasets import get_cloud_dataloaders
 from training.pdf_report_generator import (
