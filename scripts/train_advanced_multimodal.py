@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BMVC 2026 - Advanced Multimodal Training
-Spotlight Version: Focal Loss Engine, Macro F1, Dynamic Thresholds, Cosine Annealing, and DDP Cleanup
+Spotlight Version: Dynamic Loading, Safe Focal Engine, Macro F1, Cosine Annealing
 Uses Dual-Layer LLM + ResNet50 Vision + Automatic PDF Report Generation
 """
 
@@ -31,7 +31,7 @@ from transformers import logging as hf_logging
 hf_logging.set_verbosity_error()
 
 from models.advanced_multimodal_bear import AdvancedBEARModel
-# 🌟 UPGRADE 2: Swapped to Focal MultiTaskLoss (Imported with alias to match your file)
+# 🌟 UPGRADE 2: Swapped to Focal MultiTaskLoss
 from training.losses import MultiTaskLoss as FocalMultiTaskLoss
 from training.eval import evaluate_tritask
 from data.cloud_datasets import get_cloud_dataloaders
@@ -216,7 +216,7 @@ def train_one_epoch(
 
         total_loss += float(loss.item())
 
-        if rank == 0 and batch_idx % 10 == 0:
+        if rank == 0 and batch_idx % 20 == 0:
             avg_loss = total_loss / (batch_idx + 1)
             logger.info(
                 "Epoch %d | Batch %d/%d | Loss: %.4f | Avg: %.4f",
@@ -339,11 +339,12 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
         sources.insert(0, "llama_distilled")
         logger.info("🔥 OVERRIDE: 'llama_distilled' explicitly added to data sources.")
 
+    # 🌟 UNCAPPED DATA LOADER: Reads all available Llama (~16k) naturally
     train_loader, val_loader, test_loader = get_cloud_dataloaders(
         batch_size=config.get("batch_size", 32),
         eval_batch_size=config.get("eval_batch_size", 64),
         num_workers=config.get("num_workers", 4),
-        max_rows_per_source=config.get("max_rows_per_source", 5000),
+        max_rows_per_source=config.get("max_rows_per_source", 40000), 
         distributed=(world_size > 1),
         sources=sources,
         data_dir=config.get("data_dir"),
@@ -355,24 +356,25 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
     if world_size > 1:
         model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
 
-    # 🌟 UPGRADE 5: Initialize the Focal MultiTask Loss with 8.0 Intention Weight to force learning
+    # 🌟 THE GOLDEN RATIO WEIGHTS: Strong enough to learn Llama annotations, gentle enough for Kaggle noise.
     criterion = FocalMultiTaskLoss(
-        emotion_weight=0.1,    # Drastically reduced to prevent "lazy guessing"
-        intention_weight=8.0,  # Massive increase to force learning SOTA logic
-        action_weight=5.0,     # Increased to force learning SOTA logic
+        emotion_weight=config.get("emotion_weight", 1.0),    
+        intention_weight=config.get("intention_weight", 2.0),  
+        action_weight=config.get("action_weight", 2.0),     
     )
 
+    # 🌟 GOLDEN LEARNING RATE
     optimizer = AdamW(
         model.parameters(),
-        lr=2e-5,               # 🌟 Lowered from 1e-4 for stable Focal Loss convergence
-        weight_decay=0.05,     # Increased for better generalization
+        lr=config.get("learning_rate", 3e-5), 
+        weight_decay=config.get("weight_decay", 0.05),     
     )
 
     total_steps = max(1, len(train_loader) * config.get("epochs", 4))
     
     scheduler = get_cosine_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=int(total_steps * 0.2), # 🌟 Increased to 20% warmup
+        num_warmup_steps=int(total_steps * config.get("warmup_fraction", 0.15)), 
         num_training_steps=total_steps,
     )
 
@@ -448,7 +450,6 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
         logger.info("[Seed %s] FINAL TEST RESULTS:", seed)
         logger.info(" Test Loss: %.4f", test_loss)
         logger.info(" Test Emotion Accuracy: %.4f", test_metrics["emotion_accuracy"])
-        # 🌟 UPGRADE 6: Save and print the Macro F1s
         logger.info(" Test Intention F1 (Macro): %.4f", test_metrics["intention_macro_f1"])
         logger.info(" Test Action F1 (Macro): %.4f", test_metrics["action_macro_f1"])
 
@@ -509,21 +510,23 @@ def main() -> None:
     config.setdefault("batch_size", 32)
     config.setdefault("eval_batch_size", 64)
     config.setdefault("num_workers", 4)
-    config.setdefault("max_rows_per_source", 5000)
+    config.setdefault("max_rows_per_source", 40000)  # 🌟 Dynamic Uncapped default
     config.setdefault("seeds", [41, 42, 43])
     config.setdefault("fp16", True)
-    config.setdefault("warmup_fraction", 0.1)
-    config.setdefault("learning_rate", 2e-5) # 🌟 Adjusted default learning rate
-    config.setdefault("weight_decay", 0.05)  # 🌟 Adjusted default weight decay
+    config.setdefault("warmup_fraction", 0.15)
+    config.setdefault("learning_rate", 3e-5) # 🌟 Balanced LR
+    config.setdefault("weight_decay", 0.05)  
     config.setdefault("hidden_dim", 1024)
+    config.setdefault("emotion_weight", 1.0)
+    config.setdefault("intention_weight", 2.0)
+    config.setdefault("action_weight", 2.0)
 
     if rank == 0:
         logger.info("╔════════════════════════════════════════════════════════════════════╗")
-        logger.info("║ BMVC 2026 - ADVANCED MULTIMODAL TRAINING (FOCAL ENGINE)            ║")
+        logger.info("║ BMVC 2026 - ADVANCED MULTIMODAL TRAINING (DYNAMIC LOADING)         ║")
         logger.info("║ Dual-Layer LLM + ResNet50 Vision + Auto-PDF Generation             ║")
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
         
-        # 🌟 CRITICAL FIX: Ensure download plan also reflects the forced addition
         sources = config.get("cloud_sources", ["llama_distilled", "mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"])
         if "llama_distilled" not in [s.lower() for s in sources]:
              sources.insert(0, "llama_distilled")
@@ -546,7 +549,6 @@ def main() -> None:
                 with open(metrics_path, "r", encoding="utf-8") as f:
                     m = json.load(f)
                 emotion_accs.append(m["test"]["emotion_accuracy"])
-                # 🌟 UPGRADE 7: Aggregate Macro F1s
                 intention_f1s.append(m["test"]["intention_macro_f1"])
                 action_f1s.append(m["test"]["action_macro_f1"])
 
