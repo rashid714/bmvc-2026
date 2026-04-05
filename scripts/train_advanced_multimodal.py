@@ -330,16 +330,22 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
 
     apply_runtime_env_from_config(config, logger)
 
+    # 🌟 CRITICAL FIX: Force Llama Distilled to be included in the dataset sources
+    sources = config.get(
+        "cloud_sources",
+        ["llama_distilled", "mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"],
+    )
+    if "llama_distilled" not in [s.lower() for s in sources]:
+        sources.insert(0, "llama_distilled")
+        logger.info("🔥 OVERRIDE: 'llama_distilled' explicitly added to data sources.")
+
     train_loader, val_loader, test_loader = get_cloud_dataloaders(
         batch_size=config.get("batch_size", 32),
         eval_batch_size=config.get("eval_batch_size", 64),
         num_workers=config.get("num_workers", 4),
         max_rows_per_source=config.get("max_rows_per_source", 5000),
         distributed=(world_size > 1),
-        sources=config.get(
-            "cloud_sources",
-            ["llama_distilled", "mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"],
-        ),
+        sources=sources,
         data_dir=config.get("data_dir"),
     )
 
@@ -516,6 +522,13 @@ def main() -> None:
         logger.info("║ BMVC 2026 - ADVANCED MULTIMODAL TRAINING (FOCAL ENGINE)            ║")
         logger.info("║ Dual-Layer LLM + ResNet50 Vision + Auto-PDF Generation             ║")
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
+        
+        # 🌟 CRITICAL FIX: Ensure download plan also reflects the forced addition
+        sources = config.get("cloud_sources", ["llama_distilled", "mine", "emoticon", "raza", "kaggle_goemotions", "kaggle_facial", "kaggle_intent"])
+        if "llama_distilled" not in [s.lower() for s in sources]:
+             sources.insert(0, "llama_distilled")
+             config["cloud_sources"] = sources
+        
         log_download_plan(logger, config)
 
     for seed in config.get("seeds", [41, 42, 43]):
