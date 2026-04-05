@@ -291,7 +291,8 @@ class MINEModel(nn.Module):
             "fused_representation": fused_hidden,
         }
 
-    def get_predictions(self, model_output: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    # 🌟 BMVC UPGRADE: Added threshold parameter mapped directly to the paper requirements
+    def get_predictions(self, model_output: dict[str, torch.Tensor], threshold: float = 0.4) -> dict[str, torch.Tensor]:
         emotion_probs = F.softmax(model_output["emotion_logits"], dim=1)
         intention_probs = torch.sigmoid(model_output["intention_logits"])
         action_probs = torch.sigmoid(model_output["action_logits"])
@@ -300,7 +301,7 @@ class MINEModel(nn.Module):
             "emotion_probs": emotion_probs,
             "emotion_preds": emotion_probs.argmax(dim=1),
             "intention_probs": intention_probs,
-            "intention_preds": (intention_probs > 0.5).long(),
+            "intention_preds": (intention_probs > threshold).long(),
             "action_probs": action_probs,
-            "action_preds": (action_probs > 0.5).long(),
+            "action_preds": (action_probs > threshold).long(),
         }
