@@ -1,5 +1,5 @@
 """
-BEAR BMVC 2026 - MASTER CLOUD DATASET ARCHITECTURE
+BEAR BMVC 2026 - CLOUD DATASET ARCHITECTURE
 Spotlight Academic Version: Compute Efficiency + Text Augmentation + Robust Image Defense
 """
 
