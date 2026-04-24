@@ -1,6 +1,6 @@
 """
 Advanced Top-Tier Multimodal BEAR Model (BMVC 2026)
-Spotlight Version: DINOv2 Vision + RoBERTa-Large + Strict Local Caching
+Spotlight Version: DINOv2 Vision (Top-Layers Unfrozen) + RoBERTa-Large + Strict Local Caching
 """
 
 from __future__ import annotations
@@ -194,11 +194,26 @@ class AdvancedBEARModel(nn.Module):
 
     @staticmethod
     def _build_dinov2() -> nn.Module:
-        """Loads Meta's DINOv2 and entirely freezes it to act as an ultimate feature extractor."""
+        """Loads Meta's DINOv2 and unfreezes the top layers for domain adaptation."""
         logger.info("Downloading/Loading DINOv2 ViT-B/14 Backbone...")
         dinov2 = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+        
+        # 1. Freeze the entire model to save VRAM initially
         for param in dinov2.parameters():
             param.requires_grad = False
+            
+        # 2. 🌟 STRATEGY A: Unfreeze the final 2 Transformer blocks! 
+        # This allows DINOv2 to adapt its pre-trained knowledge specifically to human faces.
+        if hasattr(dinov2, 'blocks'):
+            for block in dinov2.blocks[-2:]:
+                for param in block.parameters():
+                    param.requires_grad = True
+                    
+        # 3. Unfreeze the final normalization layer
+        if hasattr(dinov2, 'norm'):
+            for param in dinov2.norm.parameters():
+                param.requires_grad = True
+                
         return dinov2
 
     def _encode_images(self, images: Optional[torch.Tensor], device: torch.device, batch_size: int) -> torch.Tensor:
@@ -207,9 +222,9 @@ class AdvancedBEARModel(nn.Module):
         if images.dim() != 4:
             raise ValueError(f"Expected images with shape [B, C, H, W], got {tuple(images.shape)}")
 
-        with torch.no_grad():
-            # DINOv2 returns the [B, 768] CLS token directly
-            img_feats = self.vision_backbone(images)
+        # 🌟 CRITICAL FIX: Removed torch.no_grad() so gradients flow into the unfrozen DINOv2 layers
+        # DINOv2 returns the [B, 768] CLS token directly
+        img_feats = self.vision_backbone(images)
 
         image_embed = self.image_encoder(img_feats)
         image_present_mask = (images.abs().sum(dim=(1, 2, 3)) > 0).float().unsqueeze(1)
