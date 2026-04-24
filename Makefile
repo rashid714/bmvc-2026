@@ -17,11 +17,12 @@ PROFESSOR_OUTPUT_DIR ?= checkpoints/professor-run
 BEST_OUTPUT_DIR ?= checkpoints/advanced-best-ultra
 
 # VRAM Optimized Defaults (DINOv2 and RoBERTa base layers are frozen)
-BATCH_SIZE ?= 16
+BATCH_SIZE ?= 8
 EPOCHS ?= 6
 NUM_WORKERS ?= 4
 # Set massively high so we never truncate the Silver Standard dataset
 MAX_ROWS ?= 100000 
+# Run all 3 seeds. The VRAM flusher in the Python script will protect the GPU.
 SEEDS ?= 41 42 43
 
 # Strict Local Vault Architecture
@@ -60,6 +61,7 @@ help:
 	@echo "Main targets:"
 	@echo "  make install             - Install dependencies"
 	@echo "  make preflight           - Create vaults and verify Curated MINE / FANE data"
+	@echo "  make predownload         - Cache DINOv2 and RoBERTa foundation models"
 	@echo "  make advanced-smoke      - Quick 1-epoch architecture compilation test"
 	@echo "  make advanced-single-gpu - Full training on a single GPU"
 	@echo "  make advanced-multi-gpu  - Full training using all detected GPUs"
@@ -93,6 +95,17 @@ preflight:
 		--report-path data/source_availability_report.json \
 		--output-json data/cloud_dataset_check.json
 	@echo "✅ Preflight complete. Vaults secured."
+
+# -----------------------------------------------------------------------------
+# Foundation Pre-Cache
+# -----------------------------------------------------------------------------
+.PHONY: predownload
+predownload:
+	@$(ensure_cache_dirs)
+	@echo "🤖 Downloading DINOv2 and RoBERTa weights to local vaults..."
+	@$(export_cache_env) \
+	$(PYTHON) scripts/predownload_assets.py
+	@echo "✅ Foundation models cached."
 
 # -----------------------------------------------------------------------------
 # Advanced multimodal training
