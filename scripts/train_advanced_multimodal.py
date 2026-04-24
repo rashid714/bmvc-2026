@@ -283,7 +283,7 @@ def main() -> None:
 
     if rank == 0:
         logger.info("╔════════════════════════════════════════════════════════════════════╗")
-        logger.info("║ BMVC 2026 - SILVER STANDARD PIPELINE                               ║")
+        logger.info("║ BMVC 2026                                                          ║")
         logger.info("║ Core: DINOv2 + RoBERTa-Large + Inverse Weighted Loss               ║")
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
 
