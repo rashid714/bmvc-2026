@@ -5,12 +5,17 @@ Spotlight Upgrades: Macro F1, mean Average Precision (mAP), and safe Zero-Divisi
 
 from __future__ import annotations
 
+import warnings
 import torch
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
     average_precision_score,
 )
+
+# 🌟 SOTA FIX: Silence the expected sklearn warnings when rare classes miss a validation batch
+warnings.filterwarnings("ignore", message="No positive class found in y_true.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="sklearn.metrics")
 
 def evaluate_tritask(
     emotion_preds: torch.Tensor,
