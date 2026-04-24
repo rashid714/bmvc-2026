@@ -1,4 +1,7 @@
-"""Evaluation metrics and utilities for multimodal classification."""
+"""
+BMVC 2026 - Multimodal Evaluation Engine
+Spotlight Upgrades: Macro F1, mean Average Precision (mAP), and safe Zero-Division.
+"""
 
 from __future__ import annotations
 
@@ -6,10 +9,8 @@ import torch
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
-    precision_score,
-    recall_score,
+    average_precision_score,
 )
-
 
 def evaluate_tritask(
     emotion_preds: torch.Tensor,
@@ -18,29 +19,16 @@ def evaluate_tritask(
     emotion_labels: torch.Tensor,
     intention_labels: torch.Tensor,
     action_labels: torch.Tensor,
-    threshold: float = 0.4,  # 🌟 BMVC DYNAMIC THRESHOLD
+    threshold: float = 0.4,  # BMVC Dynamic Threshold
 ) -> dict[str, float]:
     """
-    Evaluate multi-task predictions using academic standards.
-    
-    Args:
-        emotion_preds: [batch, num_classes] logits or [batch] class predictions
-        intention_preds: [batch, num_classes] raw logits or probabilities
-        action_preds: [batch, num_classes] raw logits or probabilities
-        emotion_labels: [batch] class labels
-        intention_labels: [batch, num_classes] binary labels
-        action_labels: [batch, num_classes] binary labels
-        threshold: Decision boundary for multi-label classification (default: 0.4)
-        
-    Returns:
-        Dictionary of metrics
+    Evaluate multi-task predictions using strict academic standards.
     """
     metrics = {}
     
     # -------------------------------------------------------------------------
-    # 1. Emotion (single-label classification)
+    # 1. Emotion (Single-Label Classification)
     # -------------------------------------------------------------------------
-    # If logits are passed instead of class indices, convert to class predictions
     if emotion_preds.dim() > 1 and emotion_preds.size(1) > 1:
         emotion_preds = torch.argmax(emotion_preds, dim=1)
         
@@ -49,40 +37,45 @@ def evaluate_tritask(
     
     metrics["emotion_accuracy"] = accuracy_score(emotion_labels_np, emotion_preds_np)
     metrics["emotion_macro_f1"] = f1_score(emotion_labels_np, emotion_preds_np, average="macro", zero_division=0)
-    metrics["emotion_weighted_f1"] = f1_score(emotion_labels_np, emotion_preds_np, average="weighted", zero_division=0)
     
     # -------------------------------------------------------------------------
-    # 2. Intention (multi-label classification)
+    # 2. Intention (Multi-Label Classification)
     # -------------------------------------------------------------------------
-    # Convert logits to probabilities if they haven't been already
     if intention_preds.min() < 0 or intention_preds.max() > 1:
         intention_probs = torch.sigmoid(intention_preds)
     else:
         intention_probs = intention_preds
         
-    intention_binary_np = (intention_probs > threshold).cpu().numpy().astype(int)
+    intention_probs_np = intention_probs.cpu().numpy()
+    intention_binary_np = (intention_probs_np > threshold).astype(int)
     intention_labels_np = intention_labels.cpu().numpy()
     
-    metrics["intention_micro_f1"] = f1_score(intention_labels_np, intention_binary_np, average="micro", zero_division=0)
-    # 🌟 CRITICAL: Track the Macro F1 for the paper
+    # Macro F1 is threshold dependent
     metrics["intention_macro_f1"] = f1_score(intention_labels_np, intention_binary_np, average="macro", zero_division=0)
-    metrics["intention_hamming"] = 1.0 - (intention_binary_np != intention_labels_np).mean()
     
+    # 🌟 SOTA UPGRADE: mAP evaluates the entire Precision-Recall curve independent of the 0.4 threshold
+    try:
+        metrics["intention_mAP"] = average_precision_score(intention_labels_np, intention_probs_np, average="macro")
+    except ValueError:
+        metrics["intention_mAP"] = 0.0 # Fallback if a batch lacks positive samples
+        
     # -------------------------------------------------------------------------
-    # 3. Action (multi-label classification)
+    # 3. Action (Multi-Label Classification)
     # -------------------------------------------------------------------------
-    # Convert logits to probabilities if they haven't been already
     if action_preds.min() < 0 or action_preds.max() > 1:
         action_probs = torch.sigmoid(action_preds)
     else:
         action_probs = action_preds
         
-    action_binary_np = (action_probs > threshold).cpu().numpy().astype(int)
+    action_probs_np = action_probs.cpu().numpy()
+    action_binary_np = (action_probs_np > threshold).astype(int)
     action_labels_np = action_labels.cpu().numpy()
     
-    metrics["action_micro_f1"] = f1_score(action_labels_np, action_binary_np, average="micro", zero_division=0)
-    # 🌟 CRITICAL: Track the Macro F1 for the paper
     metrics["action_macro_f1"] = f1_score(action_labels_np, action_binary_np, average="macro", zero_division=0)
-    metrics["action_hamming"] = 1.0 - (action_binary_np != action_labels_np).mean()
     
+    try:
+        metrics["action_mAP"] = average_precision_score(action_labels_np, action_probs_np, average="macro")
+    except ValueError:
+        metrics["action_mAP"] = 0.0
+        
     return metrics
