@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BMVC 2026 - Silver Standard Training Loop
-Spotlight Version: Dynamic Pos-Weights, Gradient Accumulation, DINOv2 + RoBERTa
+Spotlight Version: Dynamic Pos-Weights, Gradient Accumulation, DINOv2 + RoBERTa, VRAM-Safe
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import sys
 import json
 import logging
 import argparse
+import gc  # 🌟 Added Garbage Collection for VRAM flushing
 from pathlib import Path
 from typing import Dict, Any, Tuple
 
@@ -114,8 +115,8 @@ def train_one_epoch(model, train_loader, criterion, optimizer, scheduler, device
     use_amp = fp16 and device.type == "cuda"
     scaler = torch.amp.GradScaler("cuda") if use_amp else None
     
-    # 🌟 UPGRADE 2: Gradient Accumulation (Effective Batch Size = Batch * 4)
-    accumulation_steps = 4 
+    # 🌟 STRATEGY B: Increased Gradient Accumulation for stable DINOv2 updates (Effective Batch Size = 8 * 8 = 64)
+    accumulation_steps = 8 
 
     for batch_idx, batch in enumerate(train_loader):
         input_ids = batch["input_ids"].to(device, non_blocking=True)
@@ -239,7 +240,8 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
     model = AdvancedBEARModel(hidden_dim=config.get("hidden_dim", 1024)).to(device)
     if world_size > 1: model = DDP(model, device_ids=[local_rank] if device.type == "cuda" else None)
 
-    optimizer = AdamW(model.parameters(), lr=config.get("learning_rate", 3e-5), weight_decay=config.get("weight_decay", 0.05))
+    # 🌟 STRATEGY B: Lowered Learning Rate for safe DINOv2 Fine-Tuning
+    optimizer = AdamW(model.parameters(), lr=config.get("learning_rate", 1.5e-5), weight_decay=config.get("weight_decay", 0.05))
     total_steps = max(1, len(train_loader) * config.get("epochs", 6))
     scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=int(total_steps * 0.15), num_training_steps=total_steps)
 
@@ -270,7 +272,7 @@ def main() -> None:
     parser.add_argument("--config", type=str, default="configs/multimodal_cloud.json")
     parser.add_argument("--output-dir", type=str, default="checkpoints/results-final")
     parser.add_argument("--epochs", type=int, default=6)
-    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--batch-size", type=int, default=8)  # Defaulting to 8 for VRAM safety
     parser.add_argument("--seeds", type=int, nargs="+", default=[41, 42, 43])
     parser.add_argument("--num-workers", type=int, default=4)
     args = parser.parse_args()
@@ -283,12 +285,19 @@ def main() -> None:
 
     if rank == 0:
         logger.info("╔════════════════════════════════════════════════════════════════════╗")
-        logger.info("║ BMVC 2026                                                          ║")
+        logger.info("║ BMVC 2026 - MULTI-SEED RUN (VRAM OPTIMIZED)                        ║")
         logger.info("║ Core: DINOv2 + RoBERTa-Large + Inverse Weighted Loss               ║")
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
 
     for seed in config.get("seeds", [41, 42, 43]):
         run_seed(seed, config, args.output_dir, rank, world_size, local_rank, device, logger)
+        
+        # 🌟 FORCE VRAM CLEARING BETWEEN SEEDS
+        if torch.cuda.is_available():
+            gc.collect()
+            torch.cuda.empty_cache()
+            if rank == 0:
+                logger.info("🧹 Flushed GPU VRAM for the next seed.")
 
     if rank == 0:
         logger.info("✅ TRAINING COMPLETE. Aggregating PDF Data...")
