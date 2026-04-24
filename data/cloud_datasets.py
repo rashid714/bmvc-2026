@@ -227,7 +227,11 @@ class CloudMultimodalDataset(Dataset):
             batch["images"] = torch.zeros(3, 224, 224)
         elif sample.image_path and os.path.exists(sample.image_path):
             try:
-                img = Image.open(sample.image_path).convert("RGB")
+                img = Image.open(sample.image_path)
+                # 🌟 SOTA FIX: Gracefully handle transparent palette images without warnings
+                if img.mode == 'P' and 'transparency' in img.info:
+                    img = img.convert('RGBA')
+                img = img.convert("RGB")
                 batch["images"] = self.img_transform(img)
             except Exception:
                 batch["images"] = torch.zeros(3, 224, 224)
