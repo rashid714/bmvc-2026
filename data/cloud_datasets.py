@@ -50,55 +50,50 @@ class MultimodalSample:
     source_dataset: str = "unknown"
 
 # ------------------------------------------------------------------------------
-# 2. The FANE Emotion Loader (Facial Expressions & Emotion)
+# 2. The FANE Emotion Loader (JSON Distilled Version)
 # ------------------------------------------------------------------------------
 class FANELoader:
     @staticmethod
     def load_split(split: str = "train") -> List[MultimodalSample]:
         try:
-            # Check standard FANE locations
-            data_root = get_data_root()
-            target_dir = data_root / "fane" 
-            if not target_dir.exists():
-                target_dir = data_root / "kaggle_datasets" / "facial_emotions"
-                if not target_dir.exists():
-                    logger.warning("⚠️ FANE dataset not found.")
-                    return []
-
-            folder_split = "train" if split in ["train", "validation"] else "test"
-            split_dir = target_dir / "images" / folder_split
-            if not split_dir.exists(): 
+            fane_dir = get_data_root() / "fane"
+            json_path = fane_dir / "distilled_annotations.json"
+            
+            if not json_path.exists():
+                logger.warning(f"⚠️ FANE JSON not found at {json_path}")
                 return []
+
+            with open(json_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Filter data strictly by the requested split (train, validation, test)
+            split_data = [item for item in data if item.get("split", "train") == split]
 
             samples: List[MultimodalSample] = []
             
-            # Map strictly to our 9 active emotion classes
-            emotion_map = {
-                "angry": 0, "disgust": 1, "fear": 2, "happy": 3, 
-                "neutral": 4, "sad": 5, "surprise": 6, "confused": 7, "shy": 8
-            }
+            for item in split_data:
+                # The JSON uses "images_processed/angry/angry1.jpg"
+                raw_img_path = item.get("image_path", "")
+                final_img_path = str((fane_dir / raw_img_path).resolve())
 
-            for folder in split_dir.iterdir():
-                if not folder.is_dir(): continue
-                folder_name_lower = folder.name.lower()
-                
-                if folder_name_lower in emotion_map:
-                    label_idx = emotion_map[folder_name_lower]
-                    for img_file in folder.iterdir():
-                        if img_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".webp"]:
-                            samples.append(MultimodalSample(
-                                text="", # FANE is vision-only
-                                image_path=str(img_file.resolve()), 
-                                emotion_label=label_idx, 
-                                intention_labels=[0], # Default fallback
-                                action_labels=[0],    # Default fallback
-                                source_dataset="FANE_Emotion"
-                            ))
+                # Safely parse your CLIP arrays
+                intent_lbl = item.get("intention_labels", [0])
+                action_lbl = item.get("action_labels", [0])
+                emo_lbl = item.get("emotion_label", 4)
+
+                samples.append(MultimodalSample(
+                    text="", # FANE is vision-only
+                    image_path=final_img_path,
+                    emotion_label=emo_lbl,
+                    intention_labels=intent_lbl,
+                    action_labels=action_lbl,
+                    source_dataset="FANE_Distilled"
+                ))
             
-            logger.info(f"✅ Loaded {len(samples)} FANE images for {split} split.")
+            logger.info(f"✅ Loaded {len(samples)} FANE Distilled samples for {split} split.")
             return samples
         except Exception as e:
-            logger.error(f"❌ Failed to load FANE Data: {e}")
+            logger.error(f"❌ Failed to load FANE Distilled Data: {e}")
             return []
 
 # ------------------------------------------------------------------------------
