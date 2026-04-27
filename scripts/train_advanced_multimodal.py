@@ -262,10 +262,20 @@ def run_seed(seed, config, output_dir, rank, world_size, local_rank, device, log
         (model.module if isinstance(model, DDP) else model).load_state_dict(torch.load(seed_dir / "best_model.pt", map_location=device))
     
     test_loss, test_metrics = evaluate_one_epoch(model, test_loader, criterion, device, rank, logger, "Test")
+    
+    final_seed_results = {
+        "seed": seed,
+        "best_epoch": best_epoch,
+        "test_emotion_accuracy": test_metrics["emotion_accuracy"],
+        "test_intention_f1": test_metrics["intention_macro_f1"],
+        "test_action_f1": test_metrics["action_macro_f1"]
+    }
+    
     if rank == 0:
         with open(seed_dir / "metrics.json", "w", encoding="utf-8") as f:
-            json.dump({"epochs": seed_metrics, "best_epoch": best_epoch, "test": {k: float(v) for k, v in test_metrics.items()}}, f, indent=2)
-    return seed_metrics
+            json.dump({"epochs": seed_metrics, **final_seed_results}, f, indent=2)
+            
+    return final_seed_results
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -289,8 +299,10 @@ def main() -> None:
         logger.info("║ Core: DINOv2 + RoBERTa-Large + Inverse Weighted Loss               ║")
         logger.info("╚════════════════════════════════════════════════════════════════════╝")
 
+    all_results = []
     for seed in config.get("seeds", [41, 42, 43]):
-        run_seed(seed, config, args.output_dir, rank, world_size, local_rank, device, logger)
+        res = run_seed(seed, config, args.output_dir, rank, world_size, local_rank, device, logger)
+        all_results.append(res)
         
         # 🌟 FORCE VRAM CLEARING BETWEEN SEEDS
         if torch.cuda.is_available():
@@ -300,10 +312,31 @@ def main() -> None:
                 logger.info("🧹 Flushed GPU VRAM for the next seed.")
 
     if rank == 0:
-        logger.info("✅ TRAINING COMPLETE. Aggregating PDF Data...")
+        logger.info("✅ TRAINING COMPLETE. Aggregating Data...")
+        
+        # 🌟 CRITICAL FIX: Calculate the means and save summary.json
+        emo_accs = [r["test_emotion_accuracy"] for r in all_results]
+        int_f1s = [r["test_intention_f1"] for r in all_results]
+        act_f1s = [r["test_action_f1"] for r in all_results]
+        
+        summary = {
+            "test_emotion_accuracy_mean": float(np.mean(emo_accs)),
+            "test_emotion_accuracy_std": float(np.std(emo_accs)),
+            "test_intention_f1_mean": float(np.mean(int_f1s)),
+            "test_intention_f1_std": float(np.std(int_f1s)),
+            "test_action_f1_mean": float(np.mean(act_f1s)),
+            "test_action_f1_std": float(np.std(act_f1s)),
+        }
+        
+        summary_path = Path(args.output_dir) / "summary.json"
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+            
         try:
-            generate_research_report_pdf(args.output_dir, str(Path(args.output_dir) / "summary.json"), args.config)
-        except Exception: pass
+            generate_research_report_pdf(args.output_dir, str(summary_path), args.config)
+            logger.info("📄 PDF Report Generated Successfully!")
+        except Exception as e: 
+            logger.error(f"Failed to generate PDF: {e}")
 
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
