@@ -9,8 +9,6 @@ import os
 import json
 import shutil
 from pathlib import Path
-from datetime import datetime
-
 
 def create_research_paper_folder(training_output_dir, paper_output_dir="research_paper_data"):
     """
@@ -279,7 +277,6 @@ Use these concepts to draw your diagrams for the BMVC paper and interpret your P
 ## 1. NEURAL NETWORK ARCHITECTURE FLOW
 Draw this in Figma or Visio for your Methodology Section.
 
-```text
 [IMAGE]                 [TEXT]
    │                      │
    ▼                      ▼
@@ -300,3 +297,76 @@ Unfrozen Top           Unfrozen Top
       ▼           ▼           ▼
   [EMOTION]  [INTENTION]   [ACTION]
  (9 classes) (12 classes) (15 classes)
+
+## 2. HOW TO READ YOUR LEARNING GRAPHS
+When you open `1_RESULTS_TABLES/RESEARCH_RESULTS_REPORT.pdf`, look at the Loss curve.
+
+### SCENARIO A: "Good Fit" (What you want)
+       HIGH |      •  (Train Loss)
+            |       \\
+            |        •
+      LOSS  |         \\     • (Val Loss)
+            |          \\•——/
+            |           \\•—
+       LOW  |_______________•__
+              1  2  3  4  5  6
+                 EPOCHS
+Interpretation: The model learned the data perfectly and generalized to the validation set. 
+Early stopping at Epoch 6 was the correct choice.
+
+### SCENARIO B: "Overfit" (Memorization)
+       HIGH |                   /• (Val Loss Spikes)
+            |      •           /
+            |       \\         /
+      LOSS  |        •       /
+            |         \\•——/
+            |          \\
+       LOW  |___________•______
+              1  2  3  4  5  6
+                 EPOCHS
+Interpretation: The model started memorizing the training images instead of learning concepts. 
+If your PDF looks like this, it means you need to increase dropout or decrease epochs.
+"""
+    with open(visuals_dir / "LEARNING_CURVES_AND_ARCHITECTURE.md", 'w') as f:
+        f.write(guide)
+
+
+def _create_paper_writing_readme(paper_path):
+    """Create README for paper writing."""
+    readme = """# 📝 BMVC 2026 Research Paper Writing Guide
+
+## Welcome! 👋
+Your training has completed successfully. This folder contains the auto-generated templates reflecting your DINOv2 and RoBERTa architecture. 
+
+### 🎯 Quick Start
+1. Open `1_RESULTS_TABLES/RESEARCH_RESULTS_REPORT.pdf` to view your final accuracy charts.
+2. Open `6_VISUAL_GUIDES/LEARNING_CURVES_AND_ARCHITECTURE.md` to learn how to read your graphs.
+3. Open `5_PAPER_TEMPLATE/ABSTRACT_TEMPLATE.md` to begin drafting your submission.
+
+---
+
+## 📋 Paper Sections (Use Templates!)
+- **Abstract**: `5_PAPER_TEMPLATE/ABSTRACT_TEMPLATE.md`
+- **Introduction**: `5_PAPER_TEMPLATE/INTRODUCTION_TEMPLATE.md`
+- **Methodology**: `5_PAPER_TEMPLATE/METHODS_TEMPLATE.md`
+- **Results**: `5_PAPER_TEMPLATE/RESULTS_TEMPLATE.md`
+- **Conclusion**: `5_PAPER_TEMPLATE/CONCLUSION_TEMPLATE.md`
+
+---
+
+## 📈 The Tables You Need
+**Location**: `1_RESULTS_TABLES/RESULTS_TABLE.csv`
+**Also available**: `1_RESULTS_TABLES/RESULTS_LATEX_TABLE.txt` (for LaTeX)
+
+---
+
+## 🎓 Citation Information
+If you want to cite this work:
+
+```bibtex
+@inproceedings{bmvc2026,
+  title={Advanced Multimodal Emotion and Intention Recognition using DINOv2 and RoBERTa},
+  author={Izni Imthiyas},
+  booktitle={British Machine Vision Conference (BMVC)},
+  year={2026}
+}
