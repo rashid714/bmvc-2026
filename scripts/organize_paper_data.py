@@ -5,10 +5,11 @@ Auto-generates paper templates reflecting the DINOv2 + RoBERTa Silver Standard A
 Includes Visual Learning Guides.
 """
 
-import os
 import json
 import shutil
+import sys
 from pathlib import Path
+
 
 def create_research_paper_folder(training_output_dir, paper_output_dir="research_paper_data"):
     """
@@ -17,23 +18,23 @@ def create_research_paper_folder(training_output_dir, paper_output_dir="research
     paper_path = Path(paper_output_dir)
     paper_path.mkdir(parents=True, exist_ok=True)
     training_path = Path(training_output_dir)
-    
-    print(f"🚀 Organizing research paper data...")
+
+    print("🚀 Organizing research paper data...")
     print(f"   Source: {training_path}")
     print(f"   Destination: {paper_path}\n")
-    
+
     # 1. RESULTS TABLES
     print("📊 Organizing results tables...")
     results_dir = paper_path / "1_RESULTS_TABLES"
     results_dir.mkdir(exist_ok=True)
-    
+
     files_to_copy = [
         ("RESEARCH_RESULTS_REPORT.pdf", "Report (professional PDF)"),
         ("RESULTS_TABLE.csv", "Data table (for Excel)"),
         ("RESULTS_LATEX_TABLE.txt", "LaTeX table (for Overleaf)"),
         ("summary.json", "All metrics (raw data)"),
     ]
-    
+
     for filename, description in files_to_copy:
         src = training_path / filename
         if src.exists():
@@ -42,12 +43,13 @@ def create_research_paper_folder(training_output_dir, paper_output_dir="research
         else:
             print(f"   ⚠️  {filename:40s} - NOT FOUND")
     print()
-    
+
     # 2. TRAINED MODELS
     print("🤖 Organizing trained models...")
     models_dir = paper_path / "2_TRAINED_MODELS"
     models_dir.mkdir(exist_ok=True)
-    
+
+    any_model_found = False
     for seed in [41, 42, 43]:
         seed_dir = training_path / f"seed_{seed}"
         model_file = seed_dir / "best_model.pt"
@@ -56,53 +58,71 @@ def create_research_paper_folder(training_output_dir, paper_output_dir="research
             seed_models_dir.mkdir(exist_ok=True)
             shutil.copy2(model_file, seed_models_dir / "best_model.pt")
             print(f"   ✅ Seed {seed} - best_model.pt ({model_file.stat().st_size / 1e6:.1f} MB)")
+            any_model_found = True
+        else:
+            print(f"   ⚠️  Seed {seed} - best_model.pt NOT FOUND")
+
+    if not any_model_found:
+        print("   ⚠️  No trained model files were found.")
     print()
-    
+
     # 3. METRICS DATA
     print("📈 Organizing metrics data...")
     metrics_dir = paper_path / "3_METRICS_DATA"
     metrics_dir.mkdir(exist_ok=True)
-    
+
+    any_metrics_found = False
     for seed in [41, 42, 43]:
         metrics_file = training_path / f"seed_{seed}" / "metrics.json"
         if metrics_file.exists():
             shutil.copy2(metrics_file, metrics_dir / f"seed_{seed}_metrics.json")
             print(f"   ✅ Seed {seed} metrics extracted")
-            
+            any_metrics_found = True
+        else:
+            print(f"   ⚠️  Seed {seed} metrics NOT FOUND")
+
     agg_metrics = training_path / "summary.json"
     if agg_metrics.exists():
         shutil.copy2(agg_metrics, metrics_dir / "aggregated_metrics.json")
-        print(f"   ✅ Aggregated metrics (all seeds)")
+        print("   ✅ Aggregated metrics (all seeds)")
+        any_metrics_found = True
+    else:
+        print("   ⚠️  Aggregated summary.json NOT FOUND")
+
+    if not any_metrics_found:
+        print("   ⚠️  No metrics files were found.")
     print()
-    
+
     # 4. TRAINING LOGS
     print("📝 Organizing training logs...")
     logs_dir = paper_path / "4_TRAINING_LOGS"
     logs_dir.mkdir(exist_ok=True)
-    
+
     for log_name in ["training.log", "run_config.json"]:
         src = training_path / log_name
         if src.exists():
             shutil.copy2(src, logs_dir / log_name)
             print(f"   ✅ {log_name}")
+        else:
+            print(f"   ⚠️  {log_name} NOT FOUND")
     print()
-    
+
     # 5. PAPER TEMPLATE
     print("📄 Creating BMVC paper templates...")
     template_dir = paper_path / "5_PAPER_TEMPLATE"
     template_dir.mkdir(exist_ok=True)
     _create_paper_templates(template_dir, training_path)
-    
+
     # 6. VISUAL GUIDES
     print("🎨 Creating ML Visual Guides...")
     visuals_dir = paper_path / "6_VISUAL_GUIDES"
     visuals_dir.mkdir(exist_ok=True)
     _create_visual_guides(visuals_dir)
-    print(f"   ✅ Architecture and Graph interpretation guides created.")
-    
+    print("   ✅ Architecture and Graph interpretation guides created.")
+
     print()
     _create_paper_writing_readme(paper_path)
-    
+
     print("\n✅ RESEARCH PAPER FOLDER READY!")
     print(f"📁 Location: {paper_path}\n")
 
@@ -111,8 +131,9 @@ def _create_paper_templates(template_dir, training_path):
     """Create paper writing templates."""
     summary_file = training_path / "summary.json"
     summary = {}
+
     if summary_file.exists():
-        with open(summary_file, 'r') as f:
+        with open(summary_file, "r", encoding="utf-8") as f:
             summary = json.load(f)
 
     # Abstract template
@@ -121,14 +142,14 @@ def _create_paper_templates(template_dir, training_path):
 **Title**: Advanced Multimodal Emotion and Intention Recognition using DINOv2 and RoBERTa
 
 **Abstract**:
-This paper presents a novel multimodal approach for simultaneous emotion recognition, 
-intention detection, and action prediction. We propose an Advanced BEAR architecture that 
-replaces traditional CNNs with Meta's DINOv2 for dense visual feature extraction, fused with 
-RoBERTa-Large for semantic context. To overcome the extreme class imbalance inherent in 
-human behavioral datasets, we introduce a Dynamic Inverse-Weighted Multi-Label Focal Loss engine. 
-Trained on a curated "Silver Standard" dataset distilled via Large Vision Models, our system 
-demonstrates that state-of-the-art foundation model fusion improves emotion recognition accuracy 
-to {:.4f}, intention detection Macro F1-score to {:.4f}, and action prediction Macro F1-score 
+This paper presents a novel multimodal approach for simultaneous emotion recognition,
+intention detection, and action prediction. We propose an Advanced BEAR architecture that
+replaces traditional CNNs with Meta's DINOv2 for dense visual feature extraction, fused with
+RoBERTa-Large for semantic context. To overcome the extreme class imbalance inherent in
+human behavioral datasets, we introduce a Dynamic Inverse-Weighted Multi-Label Focal Loss engine.
+Trained on a curated "Silver Standard" dataset distilled via Large Vision Models, our system
+demonstrates that state-of-the-art foundation model fusion improves emotion recognition accuracy
+to {:.4f}, intention detection Macro F1-score to {:.4f}, and action prediction Macro F1-score
 to {:.4f}.
 
 **Keywords**: Multimodal Learning, DINOv2, Emotion Recognition, Multi-Label Focal Loss
@@ -140,21 +161,23 @@ to {:.4f}.
 - Intention Macro F1: {:.4f}
 - Action Macro F1: {:.4f}
 """.format(
-        summary.get('test_emotion_accuracy_mean', 0.0),
-        summary.get('test_intention_f1_mean', 0.0),
-        summary.get('test_action_f1_mean', 0.0),
-        summary.get('test_emotion_accuracy_mean', 0.0),
-        summary.get('test_intention_f1_mean', 0.0),
-        summary.get('test_action_f1_mean', 0.0),
+        summary.get("test_emotion_accuracy_mean", 0.0),
+        summary.get("test_intention_f1_mean", 0.0),
+        summary.get("test_action_f1_mean", 0.0),
+        summary.get("test_emotion_accuracy_mean", 0.0),
+        summary.get("test_intention_f1_mean", 0.0),
+        summary.get("test_action_f1_mean", 0.0),
     )
-    with open(template_dir / "ABSTRACT_TEMPLATE.md", 'w') as f: f.write(abstract)
-    print(f"   ✅ Abstract template")
-    
+
+    with open(template_dir / "ABSTRACT_TEMPLATE.md", "w", encoding="utf-8") as f:
+        f.write(abstract)
+    print("   ✅ Abstract template")
+
     # Introduction template
     intro = """# INTRODUCTION
 
 ## Motivation
-Understanding human emotions and intentions from multimodal signals is crucial for 
+Understanding human emotions and intentions from multimodal signals is crucial for
 human-computer interaction, mental health monitoring, and social computing applications.
 
 ## Contributions
@@ -171,9 +194,10 @@ human-computer interaction, mental health monitoring, and social computing appli
 - Section 6: Discussion
 - Section 7: Conclusion
 """
-    with open(template_dir / "INTRODUCTION_TEMPLATE.md", 'w') as f: f.write(intro)
-    print(f"   ✅ Introduction template")
-    
+    with open(template_dir / "INTRODUCTION_TEMPLATE.md", "w", encoding="utf-8") as f:
+        f.write(intro)
+    print("   ✅ Introduction template")
+
     # Methods template
     methods = """# METHODOLOGY
 
@@ -187,13 +211,13 @@ We predict:
 ## 3.2 Advanced Architecture
 
 ### 3.2.1 Vision Foundation Backbone (DINOv2)
-Unlike previous works relying on ResNet50, we utilize Meta's DINOv2 (ViT-B/14) to extract 
-dense, patch-level semantic features. To balance computational efficiency and domain adaptation, 
-the base transformer blocks are frozen, while the final two blocks remain unfrozen to adapt 
+Unlike previous works relying on ResNet50, we utilize Meta's DINOv2 (ViT-B/14) to extract
+dense, patch-level semantic features. To balance computational efficiency and domain adaptation,
+the base transformer blocks are frozen, while the final two blocks remain unfrozen to adapt
 to micro-expressions.
 
 ### 3.2.2 Text Foundation Backbone (RoBERTa-Large)
-We employ a 355M parameter RoBERTa-Large model. The bottom 16 layers are frozen, fine-tuning 
+We employ a 355M parameter RoBERTa-Large model. The bottom 16 layers are frozen, fine-tuning
 only the high-level semantic attention heads for language alignment.
 
 ### 3.2.3 Dual-Layer Attention Fusion
@@ -207,14 +231,25 @@ To handle severe class imbalances, we employ a custom Weighted Multi-Task Loss:
 
 L_total = (1.0 × L_emotion) + (2.0 × L_intention) + (2.0 × L_action)
 
-Where L_emotion utilizes label-smoothed CrossEntropy, and the intention/action heads utilize 
-BCEWithLogitsLoss augmented with dynamic inverse positive-weighting (capped at 50x) to strictly 
+Where L_emotion utilizes label-smoothed CrossEntropy, and the intention/action heads utilize
+BCEWithLogitsLoss augmented with dynamic inverse positive-weighting (capped at 50x) to strictly
 penalize minority class misclassification.
 """
-    with open(template_dir / "METHODS_TEMPLATE.md", 'w') as f: f.write(methods)
-    print(f"   ✅ Methods template")
-    
+    with open(template_dir / "METHODS_TEMPLATE.md", "w", encoding="utf-8") as f:
+        f.write(methods)
+    print("   ✅ Methods template")
+
     # Results template
+    emotion_mean = summary.get("test_emotion_accuracy_mean", 0.0)
+    emotion_std = summary.get("test_emotion_accuracy_std", 0.0)
+    intention_mean = summary.get("test_intention_f1_mean", 0.0)
+    intention_std = summary.get("test_intention_f1_std", 0.0)
+    action_mean = summary.get("test_action_f1_mean", 0.0)
+    action_std = summary.get("test_action_f1_std", 0.0)
+
+    # 95% CI using n=3 seeds => sqrt(3) ≈ 1.732
+    n_sqrt = 1.732
+
     results = """# RESULTS
 
 ## 4.1 Main Results (Averaged over 3 Random Seeds)
@@ -233,29 +268,34 @@ Comparison vs Single-Modality Baselines:
 - Intention: Text-heavy reliance augmented by visual cues.
 
 ## 4.3 Error Analysis
-The model demonstrates high robustness on the validation set, though extreme minority classes 
+The model demonstrates high robustness on the validation set, though extreme minority classes
 (e.g., specific rare actions) remain challenging despite 50x focal weighting.
 """.format(
-        summary.get('test_emotion_accuracy_mean', 0.0), summary.get('test_emotion_accuracy_std', 0.0),
-        summary.get('test_emotion_accuracy_mean', 0.0) - 1.96*summary.get('test_emotion_accuracy_std', 0.0)/1.732,
-        summary.get('test_emotion_accuracy_mean', 0.0) + 1.96*summary.get('test_emotion_accuracy_std', 0.0)/1.732,
-        summary.get('test_intention_f1_mean', 0.0), summary.get('test_intention_f1_std', 0.0),
-        summary.get('test_intention_f1_mean', 0.0) - 1.96*summary.get('test_intention_f1_std', 0.0)/1.732,
-        summary.get('test_intention_f1_mean', 0.0) + 1.96*summary.get('test_intention_f1_std', 0.0)/1.732,
-        summary.get('test_action_f1_mean', 0.0), summary.get('test_action_f1_std', 0.0),
-        summary.get('test_action_f1_mean', 0.0) - 1.96*summary.get('test_action_f1_std', 0.0)/1.732,
-        summary.get('test_action_f1_mean', 0.0) + 1.96*summary.get('test_action_f1_std', 0.0)/1.732,
+        emotion_mean,
+        emotion_std,
+        emotion_mean - 1.96 * emotion_std / n_sqrt,
+        emotion_mean + 1.96 * emotion_std / n_sqrt,
+        intention_mean,
+        intention_std,
+        intention_mean - 1.96 * intention_std / n_sqrt,
+        intention_mean + 1.96 * intention_std / n_sqrt,
+        action_mean,
+        action_std,
+        action_mean - 1.96 * action_std / n_sqrt,
+        action_mean + 1.96 * action_std / n_sqrt,
     )
-    with open(template_dir / "RESULTS_TEMPLATE.md", 'w') as f: f.write(results)
-    print(f"   ✅ Results template")
+
+    with open(template_dir / "RESULTS_TEMPLATE.md", "w", encoding="utf-8") as f:
+        f.write(results)
+    print("   ✅ Results template")
 
     # Conclusion template
     conclusion = """# CONCLUSION
 
-This work presents Advanced BEAR, a multimodal system combining DINOv2 and RoBERTa-Large with 
-attention-based fusion for joint emotion, intention, and action prediction. Extensive 
-experiments demonstrate the efficacy of Dynamic Inverse-Weighted Focal Loss in conquering 
-long-tail human behavior datasets. 
+This work presents Advanced BEAR, a multimodal system combining DINOv2 and RoBERTa-Large with
+attention-based fusion for joint emotion, intention, and action prediction. Extensive
+experiments demonstrate the efficacy of Dynamic Inverse-Weighted Focal Loss in conquering
+long-tail human behavior datasets.
 
 ## References
 [1] Author et al. "Paper Title" Conference Year
@@ -265,8 +305,9 @@ long-tail human behavior datasets.
 Code available at: [GitHub URL]
 Models available at: [HuggingFace URL]
 """
-    with open(template_dir / "CONCLUSION_TEMPLATE.md", 'w') as f: f.write(conclusion)
-    print(f"   ✅ Conclusion template")
+    with open(template_dir / "CONCLUSION_TEMPLATE.md", "w", encoding="utf-8") as f:
+        f.write(conclusion)
+    print("   ✅ Conclusion template")
 
 
 def _create_visual_guides(visuals_dir):
@@ -305,29 +346,31 @@ When you open `1_RESULTS_TABLES/RESEARCH_RESULTS_REPORT.pdf`, look at the Loss c
        HIGH |      •  (Train Loss)
             |       \\
             |        •
-      LOSS  |         \\     • (Val Loss)
-            |          \\•——/
-            |           \\•—
+      LOSS  |         \\\\     • (Val Loss)
+            |          \\\\•——/
+            |           \\\\•—
        LOW  |_______________•__
               1  2  3  4  5  6
                  EPOCHS
-Interpretation: The model learned the data perfectly and generalized to the validation set. 
+
+Interpretation: The model learned the data well and generalized to the validation set.
 Early stopping at Epoch 6 was the correct choice.
 
 ### SCENARIO B: "Overfit" (Memorization)
        HIGH |                   /• (Val Loss Spikes)
             |      •           /
-            |       \\         /
+            |       \\\\         /
       LOSS  |        •       /
-            |         \\•——/
-            |          \\
+            |         \\\\•——/
+            |          \\\\
        LOW  |___________•______
               1  2  3  4  5  6
                  EPOCHS
-Interpretation: The model started memorizing the training images instead of learning concepts. 
+
+Interpretation: The model started memorizing the training images instead of learning concepts.
 If your PDF looks like this, it means you need to increase dropout or decrease epochs.
 """
-    with open(visuals_dir / "LEARNING_CURVES_AND_ARCHITECTURE.md", 'w') as f:
+    with open(visuals_dir / "LEARNING_CURVES_AND_ARCHITECTURE.md", "w", encoding="utf-8") as f:
         f.write(guide)
 
 
@@ -336,7 +379,7 @@ def _create_paper_writing_readme(paper_path):
     readme = """# 📝 BMVC 2026 Research Paper Writing Guide
 
 ## Welcome! 👋
-Your training has completed successfully. This folder contains the auto-generated templates reflecting your DINOv2 and RoBERTa architecture. 
+Your training has completed successfully. This folder contains the auto-generated templates reflecting your DINOv2 and RoBERTa architecture.
 
 ### 🎯 Quick Start
 1. Open `1_RESULTS_TABLES/RESEARCH_RESULTS_REPORT.pdf` to view your final accuracy charts.
