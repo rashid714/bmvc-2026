@@ -151,7 +151,7 @@ def _create_visual_guides(visuals_dir):
     with open(visuals_dir / "LEARNING_CURVES_AND_ARCHITECTURE.md", "w", encoding="utf-8") as f:
         f.write(guide)
 
-if __name__ == "__main__":
+if _name_ == "__main__":
     output_dir = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/professor-run"
     paper_dir = sys.argv[2] if len(sys.argv) > 2 else "research_paper_data"
     if Path(output_dir).exists():
