@@ -57,7 +57,8 @@ def create_research_paper_folder(training_output_dir, paper_output_dir="research
             seed_models_dir = models_dir / f"seed_{seed}"
             seed_models_dir.mkdir(exist_ok=True)
             shutil.copy2(model_file, seed_models_dir / "best_model.pt")
-            print(f"   ✅ Seed {seed} - best_model.pt ({model_file.stat().st_size / 1e6:.1f} MB)")
+            size_mb = model_file.stat().st_size / 1e6
+            print(f"   ✅ Seed {seed} - best_model.pt ({size_mb:.1f} MB)")
             any_model_found = True
         else:
             print(f"   ⚠️  Seed {seed} - best_model.pt NOT FOUND")
@@ -136,6 +137,14 @@ def _create_paper_templates(template_dir, training_path):
         with open(summary_file, "r", encoding="utf-8") as f:
             summary = json.load(f)
 
+    emotion_acc = summary.get("test_emotion_accuracy_mean", 0.0)
+    intention_f1 = summary.get("test_intention_f1_mean", 0.0)
+    action_f1 = summary.get("test_action_f1_mean", 0.0)
+
+    emotion_std = summary.get("test_emotion_accuracy_std", 0.0)
+    intention_std = summary.get("test_intention_f1_std", 0.0)
+    action_std = summary.get("test_action_f1_std", 0.0)
+
     # Abstract template
     abstract = """# ABSTRACT TEMPLATE
 
@@ -161,12 +170,12 @@ to {:.4f}.
 - Intention Macro F1: {:.4f}
 - Action Macro F1: {:.4f}
 """.format(
-        summary.get("test_emotion_accuracy_mean", 0.0),
-        summary.get("test_intention_f1_mean", 0.0),
-        summary.get("test_action_f1_mean", 0.0),
-        summary.get("test_emotion_accuracy_mean", 0.0),
-        summary.get("test_intention_f1_mean", 0.0),
-        summary.get("test_action_f1_mean", 0.0),
+        emotion_acc,
+        intention_f1,
+        action_f1,
+        emotion_acc,
+        intention_f1,
+        action_f1,
     )
 
     with open(template_dir / "ABSTRACT_TEMPLATE.md", "w", encoding="utf-8") as f:
@@ -194,6 +203,7 @@ human-computer interaction, mental health monitoring, and social computing appli
 - Section 6: Discussion
 - Section 7: Conclusion
 """
+
     with open(template_dir / "INTRODUCTION_TEMPLATE.md", "w", encoding="utf-8") as f:
         f.write(intro)
     print("   ✅ Introduction template")
@@ -235,18 +245,12 @@ Where L_emotion utilizes label-smoothed CrossEntropy, and the intention/action h
 BCEWithLogitsLoss augmented with dynamic inverse positive-weighting (capped at 50x) to strictly
 penalize minority class misclassification.
 """
+
     with open(template_dir / "METHODS_TEMPLATE.md", "w", encoding="utf-8") as f:
         f.write(methods)
     print("   ✅ Methods template")
 
     # Results template
-    emotion_mean = summary.get("test_emotion_accuracy_mean", 0.0)
-    emotion_std = summary.get("test_emotion_accuracy_std", 0.0)
-    intention_mean = summary.get("test_intention_f1_mean", 0.0)
-    intention_std = summary.get("test_intention_f1_std", 0.0)
-    action_mean = summary.get("test_action_f1_mean", 0.0)
-    action_std = summary.get("test_action_f1_std", 0.0)
-
     # 95% CI using n=3 seeds => sqrt(3) ≈ 1.732
     n_sqrt = 1.732
 
@@ -271,18 +275,18 @@ Comparison vs Single-Modality Baselines:
 The model demonstrates high robustness on the validation set, though extreme minority classes
 (e.g., specific rare actions) remain challenging despite 50x focal weighting.
 """.format(
-        emotion_mean,
+        emotion_acc,
         emotion_std,
-        emotion_mean - 1.96 * emotion_std / n_sqrt,
-        emotion_mean + 1.96 * emotion_std / n_sqrt,
-        intention_mean,
+        emotion_acc - 1.96 * emotion_std / n_sqrt,
+        emotion_acc + 1.96 * emotion_std / n_sqrt,
+        intention_f1,
         intention_std,
-        intention_mean - 1.96 * intention_std / n_sqrt,
-        intention_mean + 1.96 * intention_std / n_sqrt,
-        action_mean,
+        intention_f1 - 1.96 * intention_std / n_sqrt,
+        intention_f1 + 1.96 * intention_std / n_sqrt,
+        action_f1,
         action_std,
-        action_mean - 1.96 * action_std / n_sqrt,
-        action_mean + 1.96 * action_std / n_sqrt,
+        action_f1 - 1.96 * action_std / n_sqrt,
+        action_f1 + 1.96 * action_std / n_sqrt,
     )
 
     with open(template_dir / "RESULTS_TEMPLATE.md", "w", encoding="utf-8") as f:
@@ -305,6 +309,7 @@ long-tail human behavior datasets.
 Code available at: [GitHub URL]
 Models available at: [HuggingFace URL]
 """
+
     with open(template_dir / "CONCLUSION_TEMPLATE.md", "w", encoding="utf-8") as f:
         f.write(conclusion)
     print("   ✅ Conclusion template")
@@ -319,15 +324,15 @@ Use these concepts to draw your diagrams for the BMVC paper and interpret your P
 Draw this in Figma or Visio for your Methodology Section.
 
 [IMAGE]                 [TEXT]
-   │                      │
-   ▼                      ▼
+   │                     │
+   ▼                     ▼
 (DINOv2 ViT-B/14)      (RoBERTa-Large)
 Frozen Base            Frozen Base (16 Layers)
 Unfrozen Top           Unfrozen Top
-   │                      │
-   ▼                      ▼
+   │                     │
+   ▼                     ▼
 [768-dim Vector]       [1024-dim Vector]
-   │                      │
+   │                     │
    └──► [DUAL-LAYER ATTENTION] ◄──┘
             (Fusion Block)
                   │
@@ -336,40 +341,41 @@ Unfrozen Top           Unfrozen Top
                   │
       ┌───────────┼───────────┐
       ▼           ▼           ▼
-  [EMOTION]  [INTENTION]   [ACTION]
- (9 classes) (12 classes) (15 classes)
+   [EMOTION]  [INTENTION]   [ACTION]
+  (9 classes) (12 classes) (15 classes)
 
 ## 2. HOW TO READ YOUR LEARNING GRAPHS
 When you open `1_RESULTS_TABLES/RESEARCH_RESULTS_REPORT.pdf`, look at the Loss curve.
 
 ### SCENARIO A: "Good Fit" (What you want)
-       HIGH |      •  (Train Loss)
-            |       \\
-            |        •
-      LOSS  |         \\\\     • (Val Loss)
-            |          \\\\•——/
-            |           \\\\•—
-       LOW  |_______________•__
-              1  2  3  4  5  6
-                 EPOCHS
+      HIGH |      •  (Train Loss)
+           |       \\
+           |        •
+      LOSS |         \\\\     • (Val Loss)
+           |          \\\\•——/
+           |           \\\\•—
+      LOW  |_______________•__
+             1  2  3  4  5  6
+                EPOCHS
 
 Interpretation: The model learned the data well and generalized to the validation set.
 Early stopping at Epoch 6 was the correct choice.
 
 ### SCENARIO B: "Overfit" (Memorization)
-       HIGH |                   /• (Val Loss Spikes)
-            |      •           /
-            |       \\\\         /
-      LOSS  |        •       /
-            |         \\\\•——/
-            |          \\\\
-       LOW  |___________•______
-              1  2  3  4  5  6
-                 EPOCHS
+      HIGH |                   /• (Val Loss Spikes)
+           |      •           /
+           |       \\\\         /
+      LOSS |        •       /
+           |         \\\\•——/
+           |          \\\\
+      LOW  |___________•______
+             1  2  3  4  5  6
+                EPOCHS
 
 Interpretation: The model started memorizing the training images instead of learning concepts.
 If your PDF looks like this, it means you need to increase dropout or decrease epochs.
 """
+
     with open(visuals_dir / "LEARNING_CURVES_AND_ARCHITECTURE.md", "w", encoding="utf-8") as f:
         f.write(guide)
 
@@ -426,3 +432,4 @@ if Path(output_dir).exists():
 else:
     print(f"❌ Training output not found: {output_dir}")
     print("   Run training first: make professor-run")
+    
