@@ -409,7 +409,6 @@ If you want to cite this work:
 ```bibtex
 @inproceedings{bmvc2026,
   title={Advanced Multimodal Emotion and Intention Recognition using DINOv2 and RoBERTa},
-  author={Izni Imthiyas},
   booktitle={British Machine Vision Conference (BMVC)},
   year={2026}
 }
