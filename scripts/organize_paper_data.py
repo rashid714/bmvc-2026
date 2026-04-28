@@ -412,3 +412,17 @@ If you want to cite this work:
   booktitle={British Machine Vision Conference (BMVC)},
   year={2026}
 }
+Good luck with your submission! 🎓
+"""
+with open(paper_path / "README_FOR_PAPER_WRITING.md", "w", encoding="utf-8") as f:
+f.write(readme)
+
+if name == "main":
+output_dir = sys.argv[1] if len(sys.argv) > 1 else "checkpoints/professor-run"
+paper_dir = sys.argv[2] if len(sys.argv) > 2 else "research_paper_data"
+
+if Path(output_dir).exists():
+    create_research_paper_folder(output_dir, paper_dir)
+else:
+    print(f"❌ Training output not found: {output_dir}")
+    print("   Run training first: make professor-run")
