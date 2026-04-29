@@ -1,99 +1,94 @@
 #!/usr/bin/env python3
 
-import json
-import matplotlib.pyplot as plt
+import sys
+import torch
+import warnings
 from pathlib import Path
-import numpy as np
-import os
+from sklearn.metrics import classification_report
 
-def generate_bmvc_plots():
-    # 1. SMART PATH FINDER: Guarantees it stays inside bmvc-2026
-    current_dir = Path.cwd()
-    if current_dir.name == "scripts":
-        project_root = current_dir.parent
-    else:
-        project_root = current_dir
+# Silence sklearn zero-division warnings 
+warnings.filterwarnings("ignore")
 
-    training_path = project_root / "checkpoints" / "professor-run"
-    output_dir = project_root / "research_paper_data" / "6_VISUAL_GUIDES"
-    
-    print("\n🚀 STARTING GRAPH GENERATOR...")
-    print(f"🔍 Looking for training data in: {training_path}")
-    
-    # 2. AGGRESSIVE FOLDER CREATION
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"📁 Saving graphs directly to: {output_dir}\n")
-    
-    all_metrics = []
-    # 3. Checks for all possible seed names (1, 2, 3 or 41, 42, 43)
-    for seed in [1, 2, 3, 41, 42, 43]:
-        metric_file = training_path / f"seed_{seed}" / "metrics.json"
-        if metric_file.exists():
-            print(f"   ✅ Found data for Seed {seed}")
-            with open(metric_file, "r", encoding="utf-8") as f:
-                all_metrics.append(json.load(f))
-                
-    if not all_metrics:
-        print(f"\n❌ ERROR: Could not find any metrics.json files inside {training_path}")
-        print("Please check that your training finished successfully!")
+# 1. Map to your actual project files perfectly
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+
+from models.advanced_multimodal_bear import AdvancedBEARModel
+from data.cloud_datasets import get_cloud_dataloaders
+
+# FIXED: 12 Intentions to perfectly match your curated MINE dataset
+INTENTION_NAMES = [f"Intention_{i}" for i in range(12)]
+ACTION_NAMES = [f"Action_{i}" for i in range(15)]
+
+def generate_report():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🖥️ Using device: {device}")
+
+    print("📦 Loading Silver Standard Test Dataset...")
+    _, _, test_loader = get_cloud_dataloaders(
+        batch_size=8, eval_batch_size=32, num_workers=4, distributed=False, sources=["mine_curated", "fane"]
+    )
+
+    print("🧠 Loading Advanced BEAR Model weights (Seed 41)...")
+    model = AdvancedBEARModel(hidden_dim=1024).to(device)
+    model_path = project_root / "checkpoints" / "professor-run" / "seed_41" / "best_model.pt"
+
+    if not model_path.exists():
+        print(f"❌ ERROR: Could not find {model_path}")
         return
 
-    epochs = [ep["epoch"] for ep in all_metrics[0]["epochs"]]
-    last_epoch = epochs[-1]
-    
-    # Calculate the mean losses
-    train_loss = np.mean([[ep["train_loss"] for ep in run["epochs"]] for run in all_metrics], axis=0)
-    val_loss = np.mean([[ep["val_loss"] for ep in run["epochs"]] for run in all_metrics], axis=0)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
 
-    # Plot 1: The Loss Curve (Train vs Val)
-    plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_loss, label='Train Loss', marker='o', linewidth=2.5, color='#1f77b4')
-    plt.plot(epochs, val_loss, label='Validation Loss', marker='s', linewidth=2.5, color='#d62728')
-    plt.title('BMVC 2026: Training vs Validation Loss\n(Averaged across 3 seeds)', fontsize=14, fontweight='bold')
-    plt.xlabel('Epochs', fontsize=12, fontweight='bold')
-    plt.ylabel('Tri-Task Focal Loss', fontsize=12, fontweight='bold')
-    plt.grid(True, linestyle='--', alpha=0.7)
-    plt.legend(fontsize=12)
-    plt.tight_layout()
-    
-    loss_path = output_dir / 'bmvc_loss_curve.png'
-    plt.savefig(loss_path, dpi=300)
-    plt.close()
-    print(f"\n✅ SUCCESS: Saved Loss curve to {loss_path}")
-    
-    # Calculate Validation Means
-    val_emo = np.mean([[ep["emotion_accuracy"] for ep in run["epochs"]] for run in all_metrics], axis=0)
-    val_int = np.mean([[ep["intention_macro_f1"] for ep in run["epochs"]] for run in all_metrics], axis=0)
-    val_act = np.mean([[ep["action_macro_f1"] for ep in run["epochs"]] for run in all_metrics], axis=0)
+    print("⏳ Extracting Per-Class Metrics... (This will take ~60 seconds)")
+    all_int_preds, all_int_labels = [], []
+    all_act_preds, all_act_labels = [], []
 
-    # Calculate Final Test Means
-    test_emo = np.mean([run.get("test_emotion_accuracy", 0) for run in all_metrics])
-    test_int = np.mean([run.get("test_intention_f1", 0) for run in all_metrics])
-    test_act = np.mean([run.get("test_action_f1", 0) for run in all_metrics])
+    with torch.no_grad():
+        for batch in test_loader:
+            input_ids = batch["input_ids"].to(device, non_blocking=True)
+            attention_mask = batch["attention_mask"].to(device, non_blocking=True)
+            images = batch.get("images")
+            if images is not None: images = images.to(device, non_blocking=True)
 
-    # Plot 2: The Unified Validation + Test Curve
-    plt.figure(figsize=(10, 6))
-    
-    plt.plot(epochs, val_emo, label='Validation Emotion (Acc)', marker='o', color='#2ca02c', linewidth=2.5, alpha=0.7)
-    plt.plot(epochs, val_int, label='Validation Intention (F1)', marker='s', color='#ff7f0e', linewidth=2.5, alpha=0.7)
-    plt.plot(epochs, val_act, label='Validation Action (F1)', marker='^', color='#9467bd', linewidth=2.5, alpha=0.7)
-    
-    plt.plot(last_epoch, test_emo, marker='*', markersize=18, color='darkgreen', label='TEST Emotion (Acc)', linestyle='None', zorder=5)
-    plt.plot(last_epoch, test_int, marker='*', markersize=18, color='darkorange', label='TEST Intention (F1)', linestyle='None', zorder=5)
-    plt.plot(last_epoch, test_act, marker='*', markersize=18, color='indigo', label='TEST Action (F1)', linestyle='None', zorder=5)
+            out = model(input_ids, attention_mask, images=images)
 
-    plt.title('BMVC 2026: Validation vs TEST Performance\n(Averaged across 3 seeds)', fontsize=15, fontweight='bold')
-    plt.xlabel('Epochs', fontsize=12, fontweight='bold')
-    plt.ylabel('Metric Score', fontsize=12, fontweight='bold')
-    plt.grid(True, linestyle='--', alpha=0.5)
+            # Using your eval.py's exact 0.4 threshold
+            int_preds = (torch.sigmoid(out["intention_logits"]).cpu().numpy() > 0.4).astype(int)
+            act_preds = (torch.sigmoid(out["action_logits"]).cpu().numpy() > 0.4).astype(int)
+
+            all_int_preds.extend(int_preds)
+            all_int_labels.extend(batch["intention_labels"].cpu().numpy())
+            all_act_preds.extend(act_preds)
+            all_act_labels.extend(batch["action_labels"].cpu().numpy())
+
+    print("\n" + "="*50)
+    print("🎯 INTENTION DETECTION (The Good & The Bad)")
+    print("="*50)
+    int_report = classification_report(all_int_labels, all_int_preds, target_names=INTENTION_NAMES, output_dict=True, zero_division=0)
+    _print_extreme_cases(int_report, INTENTION_NAMES)
+
+    print("\n" + "="*50)
+    print("🏃 ACTION PREDICTION (The Good & The Bad)")
+    print("="*50)
+    act_report = classification_report(all_act_labels, all_act_preds, target_names=ACTION_NAMES, output_dict=True, zero_division=0)
+    _print_extreme_cases(act_report, ACTION_NAMES)
+
+def _print_extreme_cases(report, class_names):
+    scores = []
+    for cls in class_names:
+        if cls in report:
+            scores.append((cls, report[cls]['f1-score']))
+            
+    scores.sort(key=lambda x: x[1])
     
-    plt.legend(fontsize=11, bbox_to_anchor=(1.05, 1), loc='upper left')
-    plt.tight_layout()
-    
-    metric_path = output_dir / 'bmvc_train_val_test_curve.png'
-    plt.savefig(metric_path, dpi=300)
-    plt.close()
-    print(f"✅ SUCCESS: Saved perfectly unified Train/Val/Test graph to {metric_path}\n")
+    print("\n🚨 HARDEST CASES (Lowest F1):")
+    for name, f1 in scores[:5]:
+        print(f"  ❌ {name:<15}: {f1:.4f}")
+        
+    print("\n🌟 BEST CASES (Highest F1):")
+    for name, f1 in reversed(scores[-5:]):
+        print(f"  ✅ {name:<15}: {f1:.4f}")
 
 if __name__ == "__main__":
-    generate_bmvc_plots()
+    generate_report()
