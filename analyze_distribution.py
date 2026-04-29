@@ -1,89 +1,86 @@
 #!/usr/bin/env python3
-import json
-import sys
-import os
-from pathlib import Path
-from collections import Counter
 
-# 🌟 CRITICAL FIX: Ensure the project root is in the Python path so imports work
+import sys
+import torch
+from pathlib import Path
+
+# 🌟 CRITICAL FIX: Ensure the project root is in the Python path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from data.cloud_datasets import UnifiedCloudDatasetBuilder
+# Import the actual dataloader function we know works!
+from data.cloud_datasets import get_cloud_dataloaders
 
-# The exact taxonomies we defined
+# Your Taxonomies
 EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise", "Confused", "Shy", "Frustrated", "Excited"]
-INTENTIONS = ["Informing/Stating", "Seeking Information", "Requesting Help", "Complaining", "Agreeing", "Disagreeing", "Warning", "Greeting", "Apologizing", "Suggesting", "Expressing Gratitude", "Expressing Confusion", "Denying", "Confirming", "Instructing/Commanding", "Inquiring (Status)", "Threatening", "Consoling/Comforting", "Persuading", "Promising"]
+INTENTIONS = ["Informing/Stating", "Seeking Information", "Requesting Help", "Complaining", "Agreeing", "Disagreeing", "Warning", "Greeting", "Apologizing", "Suggesting", "Expressing Gratitude", "Expressing Confusion", "Denying", "Confirming", "Instructing/Commanding", "Inquiring", "Threatening", "Consoling", "Persuading", "Promising"]
 ACTIONS = ["No Action/Still", "Standing", "Sitting", "Walking", "Running", "Pointing", "Typing/Texting", "Shouting/Yelling", "Crying", "Smiling/Laughing", "Holding an Object", "Looking Away", "Gesturing", "Waving", "Reading/Examining"]
 
 def main():
-    print("🔍 Scanning local datasets... This will take a minute...")
+    print("🚀 Booting up the Dataloaders to calculate exact distribution...")
     
-    config_path = "configs/multimodal_cloud.json"
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
-    except FileNotFoundError:
-        print(f"❌ Error: Config file not found at {config_path}")
-        return
-    except json.JSONDecodeError:
-        print(f"❌ Error: Invalid JSON format in {config_path}")
+        train_loader, val_loader, test_loader = get_cloud_dataloaders(
+            batch_size=32, eval_batch_size=32, num_workers=4, distributed=False, sources=["mine_curated", "fane"]
+        )
+    except Exception as e:
+        print(f"❌ Error loading dataloaders: {e}")
         return
 
-    sources = config.get("cloud_sources", ["llama_distilled", "mine", "goemotions", "dailydialog", "tweet_eval", "emoticon", "raza"])
-    
-    # Ensure llama_distilled is prioritized and not accidentally removed
-    if "llama_distilled" not in [s.lower() for s in sources]:
-        sources.insert(0, "llama_distilled")
+    emo_counts = None
+    int_counts = None
+    act_counts = None
 
-    print(f"📂 Loading sources: {', '.join(sources)}")
+    print("⏳ Scanning all dataset splits... (This will take a minute or two)")
 
-    # Load exactly how the training script loads it
-    samples = UnifiedCloudDatasetBuilder.build_multimodal_dataset(
-        sources=sources, 
-        splits={"train": 40000, "validation": 5000, "test": 5000}
-    )
+    # Scan through all three datasets to get the absolute total
+    for loader, name in [(train_loader, "Train"), (val_loader, "Validation"), (test_loader, "Test")]:
+        print(f"  👉 Counting {name} Set...")
+        for batch in loader:
+            emo_lbls = batch["emotion_labels"]
+            int_lbls = batch["intention_labels"]
+            act_lbls = batch["action_labels"]
 
-    if not samples:
-        print("❌ Error: No samples loaded. Check your data directories.")
-        return
+            # Initialize the counters on the first batch dynamically
+            if emo_counts is None:
+                # Emotion is a 1D tensor of class indices
+                emo_counts = torch.zeros(len(EMOTIONS), dtype=torch.long)
+                # Intentions and Actions are 2D multi-label tensors
+                int_counts = torch.zeros(int_lbls.size(1), dtype=torch.long)
+                act_counts = torch.zeros(act_lbls.size(1), dtype=torch.long)
 
-    print(f"\n✅ Successfully loaded {len(samples):,} total samples. Calculating distributions...\n")
+            # 1. Count Emotions (Single Label)
+            batch_emo_counts = torch.bincount(emo_lbls.cpu().long(), minlength=len(emo_counts))
+            # Only add up to the size of our tracking tensor
+            emo_counts[:len(batch_emo_counts)] += batch_emo_counts[:len(emo_counts)]
 
-    emo_counts = Counter()
-    int_counts = Counter()
-    act_counts = Counter()
+            # 2. Count Intentions & Actions (Multi Label)
+            int_counts += int_lbls.sum(dim=0).cpu().long()
+            act_counts += act_lbls.sum(dim=0).cpu().long()
 
-    # Safely aggregate the labels
-    for s in samples:
-        emo_counts[s.emotion_label] += 1
-        
-        for idx in (s.intention_labels or []):
-            if isinstance(idx, int) and 0 <= idx < 20:
-                int_counts[idx] += 1
-                
-        for idx in (s.action_labels or []):
-            if isinstance(idx, int) and 0 <= idx < 15:
-                act_counts[idx] += 1
-
-    # Print beautifully aligned tables
+    # =========================================================
+    # PRINTING THE FINAL RESULTS
+    # =========================================================
+    print("\n" + "="*60)
+    print(" 🎭 EMOTION DISTRIBUTION (Single-Label)")
     print("="*60)
-    print(" 🧠 EMOTION DISTRIBUTION (Single-Label)")
-    print("="*60)
-    for i, name in enumerate(EMOTIONS):
-        print(f" - [{i:02d}] {name:<25}: {emo_counts.get(i, 0):>9,} samples")
+    for i in range(len(emo_counts)):
+        name = EMOTIONS[i] if i < len(EMOTIONS) else f"Emotion_{i}"
+        print(f" - [{i:02d}] {name:<25}: {emo_counts[i].item():>9,} samples")
 
     print("\n" + "="*60)
     print(" 🎯 INTENTION DISTRIBUTION (Multi-Label)")
     print("="*60)
-    for i, name in enumerate(INTENTIONS):
-        print(f" - [{i:02d}] {name:<25}: {int_counts.get(i, 0):>9,} samples")
+    for i in range(len(int_counts)):
+        name = INTENTIONS[i] if i < len(INTENTIONS) else f"Intention_{i}"
+        print(f" - [{i:02d}] {name:<25}: {int_counts[i].item():>9,} samples")
 
     print("\n" + "="*60)
     print(" 🏃 ACTION DISTRIBUTION (Multi-Label)")
     print("="*60)
-    for i, name in enumerate(ACTIONS):
-        print(f" - [{i:02d}] {name:<25}: {act_counts.get(i, 0):>9,} samples")
-        
+    for i in range(len(act_counts)):
+        name = ACTIONS[i] if i < len(ACTIONS) else f"Action_{i}"
+        print(f" - [{i:02d}] {name:<25}: {act_counts[i].item():>9,} samples")
+
     print("\n" + "="*60)
     print("✅ Analysis Complete!")
 
