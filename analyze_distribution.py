@@ -7,16 +7,16 @@ from pathlib import Path
 # 🌟 CRITICAL FIX: Ensure the project root is in the Python path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Import the actual dataloader function we know works!
 from data.cloud_datasets import get_cloud_dataloaders
 
-# Your Taxonomies
-EMOTIONS = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise", "Confused", "Shy", "Frustrated", "Excited"]
-INTENTIONS = ["Informing/Stating", "Seeking Information", "Requesting Help", "Complaining", "Agreeing", "Disagreeing", "Warning", "Greeting", "Apologizing", "Suggesting", "Expressing Gratitude", "Expressing Confusion", "Denying", "Confirming", "Instructing/Commanding", "Inquiring", "Threatening", "Consoling", "Persuading", "Promising"]
-ACTIONS = ["No Action/Still", "Standing", "Sitting", "Walking", "Running", "Pointing", "Typing/Texting", "Shouting/Yelling", "Crying", "Smiling/Laughing", "Holding an Object", "Looking Away", "Gesturing", "Waving", "Reading/Examining"]
+# These are just translation dictionaries. 
+# The script will automatically figure out how many to actually use!
+EMOTION_NAMES = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise", "Confused", "Shy"]
+INTENTION_NAMES = ["Informing/Stating", "Seeking Information", "Requesting Help", "Complaining", "Agreeing", "Disagreeing", "Warning", "Greeting", "Apologizing", "Suggesting", "Expressing Gratitude", "Expressing Confusion"]
+ACTION_NAMES = ["No Action/Still", "Standing", "Sitting", "Walking", "Running", "Pointing", "Typing/Texting", "Shouting/Yelling", "Crying", "Smiling/Laughing", "Holding an Object", "Looking Away", "Gesturing", "Waving", "Reading/Examining"]
 
 def main():
-    print("🚀 Booting up the Dataloaders to calculate exact distribution...")
+    print("🚀 Booting up the Dataloaders for AUTO-DETECTION...")
     
     try:
         train_loader, val_loader, test_loader = get_cloud_dataloaders(
@@ -26,36 +26,44 @@ def main():
         print(f"❌ Error loading dataloaders: {e}")
         return
 
-    emo_counts = None
+    # We will let the dataset tell us exactly how big these should be
+    emo_counts = torch.zeros(50, dtype=torch.long)  # Temp buffer
     int_counts = None
     act_counts = None
+    max_emo_idx = 0
 
-    print("⏳ Scanning all dataset splits... (This will take a minute or two)")
+    print("⏳ Scanning datasets to auto-detect dimensions... (This takes a minute)")
 
-    # Scan through all three datasets to get the absolute total
     for loader, name in [(train_loader, "Train"), (val_loader, "Validation"), (test_loader, "Test")]:
-        print(f"  👉 Counting {name} Set...")
+        print(f"  👉 Scanning {name} Set...")
         for batch in loader:
             emo_lbls = batch["emotion_labels"]
             int_lbls = batch["intention_labels"]
             act_lbls = batch["action_labels"]
 
-            # Initialize the counters on the first batch dynamically
-            if emo_counts is None:
-                # Emotion is a 1D tensor of class indices
-                emo_counts = torch.zeros(len(EMOTIONS), dtype=torch.long)
-                # Intentions and Actions are 2D multi-label tensors
-                int_counts = torch.zeros(int_lbls.size(1), dtype=torch.long)
-                act_counts = torch.zeros(act_lbls.size(1), dtype=torch.long)
+            # 🌟 AUTO-DETECT SHAPES ON THE FIRST BATCH
+            if int_counts is None:
+                detected_intentions = int_lbls.size(1)
+                detected_actions = act_lbls.size(1)
+                print(f"     ✅ Auto-Detected {detected_intentions} Intentions & {detected_actions} Actions from tensor shapes!")
+                int_counts = torch.zeros(detected_intentions, dtype=torch.long)
+                act_counts = torch.zeros(detected_actions, dtype=torch.long)
 
             # 1. Count Emotions (Single Label)
-            batch_emo_counts = torch.bincount(emo_lbls.cpu().long(), minlength=len(emo_counts))
-            # Only add up to the size of our tracking tensor
-            emo_counts[:len(batch_emo_counts)] += batch_emo_counts[:len(emo_counts)]
+            current_max = int(torch.max(emo_lbls).item())
+            if current_max > max_emo_idx:
+                max_emo_idx = current_max
+            
+            batch_emo_counts = torch.bincount(emo_lbls.cpu().long(), minlength=50)
+            emo_counts += batch_emo_counts
 
             # 2. Count Intentions & Actions (Multi Label)
             int_counts += int_lbls.sum(dim=0).cpu().long()
             act_counts += act_lbls.sum(dim=0).cpu().long()
+
+    # Trim the emotion counts to the exact maximum class detected in the data
+    emo_counts = emo_counts[:max_emo_idx + 1]
+    print(f"     ✅ Auto-Detected {len(emo_counts)} Emotions from the data!")
 
     # =========================================================
     # PRINTING THE FINAL RESULTS
@@ -64,21 +72,21 @@ def main():
     print(" 🎭 EMOTION DISTRIBUTION (Single-Label)")
     print("="*60)
     for i in range(len(emo_counts)):
-        name = EMOTIONS[i] if i < len(EMOTIONS) else f"Emotion_{i}"
+        name = EMOTION_NAMES[i] if i < len(EMOTION_NAMES) else f"Emotion_{i}"
         print(f" - [{i:02d}] {name:<25}: {emo_counts[i].item():>9,} samples")
 
     print("\n" + "="*60)
     print(" 🎯 INTENTION DISTRIBUTION (Multi-Label)")
     print("="*60)
     for i in range(len(int_counts)):
-        name = INTENTIONS[i] if i < len(INTENTIONS) else f"Intention_{i}"
+        name = INTENTION_NAMES[i] if i < len(INTENTION_NAMES) else f"Intention_{i}"
         print(f" - [{i:02d}] {name:<25}: {int_counts[i].item():>9,} samples")
 
     print("\n" + "="*60)
     print(" 🏃 ACTION DISTRIBUTION (Multi-Label)")
     print("="*60)
     for i in range(len(act_counts)):
-        name = ACTIONS[i] if i < len(ACTIONS) else f"Action_{i}"
+        name = ACTION_NAMES[i] if i < len(ACTION_NAMES) else f"Action_{i}"
         print(f" - [{i:02d}] {name:<25}: {act_counts[i].item():>9,} samples")
 
     print("\n" + "="*60)
