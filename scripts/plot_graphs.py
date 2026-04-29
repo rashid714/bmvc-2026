@@ -3,6 +3,7 @@
 import sys
 import torch
 import warnings
+import numpy as np
 from pathlib import Path
 from sklearn.metrics import classification_report
 
@@ -15,10 +16,6 @@ sys.path.insert(0, str(project_root))
 
 from models.advanced_multimodal_bear import AdvancedBEARModel
 from data.cloud_datasets import get_cloud_dataloaders
-
-# FIXED: 12 Intentions to perfectly match your curated MINE dataset
-INTENTION_NAMES = [f"Intention_{i}" for i in range(12)]
-ACTION_NAMES = [f"Action_{i}" for i in range(15)]
 
 def generate_report():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -62,16 +59,30 @@ def generate_report():
             all_act_preds.extend(act_preds)
             all_act_labels.extend(batch["action_labels"].cpu().numpy())
 
+    # Convert lists to numpy arrays to check their exact dimensions
+    all_int_labels_np = np.array(all_int_labels)
+    all_int_preds_np = np.array(all_int_preds)
+    all_act_labels_np = np.array(all_act_labels)
+    all_act_preds_np = np.array(all_act_preds)
+
+    # 🌟 SOTA FIX: Dynamically detect the exact number of classes from your dataset!
+    actual_num_intentions = all_int_labels_np.shape[1]
+    actual_num_actions = all_act_labels_np.shape[1]
+
+    # Generate the exact correct list of names so sklearn never crashes
+    INTENTION_NAMES = [f"Intention_{i}" for i in range(actual_num_intentions)]
+    ACTION_NAMES = [f"Action_{i}" for i in range(actual_num_actions)]
+
     print("\n" + "="*50)
     print("🎯 INTENTION DETECTION (The Good & The Bad)")
     print("="*50)
-    int_report = classification_report(all_int_labels, all_int_preds, target_names=INTENTION_NAMES, output_dict=True, zero_division=0)
+    int_report = classification_report(all_int_labels_np, all_int_preds_np, target_names=INTENTION_NAMES, output_dict=True, zero_division=0)
     _print_extreme_cases(int_report, INTENTION_NAMES)
 
     print("\n" + "="*50)
     print("🏃 ACTION PREDICTION (The Good & The Bad)")
     print("="*50)
-    act_report = classification_report(all_act_labels, all_act_preds, target_names=ACTION_NAMES, output_dict=True, zero_division=0)
+    act_report = classification_report(all_act_labels_np, all_act_preds_np, target_names=ACTION_NAMES, output_dict=True, zero_division=0)
     _print_extreme_cases(act_report, ACTION_NAMES)
 
 def _print_extreme_cases(report, class_names):
