@@ -16,10 +16,10 @@ sys.path.insert(0, str(project_root))
 from models.advanced_multimodal_bear import AdvancedBEARModel
 from data.cloud_datasets import get_cloud_dataloaders
 
-# Your exact Tri-Task class distribution
-EMOTION_NAMES = [f"Emotion_{i}" for i in range(11)]
-INTENTION_NAMES = [f"Intention_{i}" for i in range(12)]
-ACTION_NAMES = [f"Action_{i}" for i in range(15)]
+# 🌟 PERFECTED TAXONOMIES (Matches your new 9-12-15 model exactly!)
+EMOTION_NAMES = ["Angry", "Disgust", "Fear", "Happy", "Neutral", "Sad", "Surprise", "Confused", "Shy"]
+INTENTION_NAMES = ["Informing", "Seeking_Info", "Req_Help", "Complaining", "Agreeing", "Disagreeing", "Warning", "Greeting", "Apologizing", "Suggesting", "Gratitude", "Confusion"]
+ACTION_NAMES = ["Still", "Standing", "Sitting", "Walking", "Running", "Pointing", "Typing", "Shouting", "Crying", "Smiling", "Holding", "Looking_Away", "Gesturing", "Waving", "Reading"]
 
 def generate_report():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -31,11 +31,12 @@ def generate_report():
     )
 
     print("🧠 Loading Advanced BEAR Model weights (Seed 41)...")
+    # Make sure this matches the 9-12-15 architecture
     model = AdvancedBEARModel(hidden_dim=1024).to(device)
     model_path = project_root / "checkpoints" / "professor-run" / "seed_41" / "best_model.pt"
 
     if not model_path.exists():
-        print(f"❌ ERROR: Could not find {model_path}")
+        print(f"❌ ERROR: Could not find {model_path}. Has your new training finished?")
         return
 
     model.load_state_dict(torch.load(model_path, map_location=device))
