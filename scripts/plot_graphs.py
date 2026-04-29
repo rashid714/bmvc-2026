@@ -5,7 +5,7 @@ import torch
 import warnings
 import numpy as np
 from pathlib import Path
-from sklearn.metrics import classification_report
+from sklearn.metrics import f1_score
 
 # Silence sklearn zero-division warnings 
 warnings.filterwarnings("ignore")
@@ -59,37 +59,32 @@ def generate_report():
             all_act_preds.extend(act_preds)
             all_act_labels.extend(batch["action_labels"].cpu().numpy())
 
-    # Convert lists to numpy arrays to check their exact dimensions
-    all_int_labels_np = np.array(all_int_labels)
-    all_int_preds_np = np.array(all_int_preds)
-    all_act_labels_np = np.array(all_act_labels)
-    all_act_preds_np = np.array(all_act_preds)
-
-    # 🌟 SOTA FIX: Dynamically detect the exact number of classes from your dataset!
-    actual_num_intentions = all_int_labels_np.shape[1]
-    actual_num_actions = all_act_labels_np.shape[1]
-
-    # Generate the exact correct list of names so sklearn never crashes
-    INTENTION_NAMES = [f"Intention_{i}" for i in range(actual_num_intentions)]
-    ACTION_NAMES = [f"Action_{i}" for i in range(actual_num_actions)]
+    # Convert to numpy arrays
+    int_labels_np = np.array(all_int_labels)
+    int_preds_np = np.array(all_int_preds)
+    act_labels_np = np.array(all_act_labels)
+    act_preds_np = np.array(all_act_preds)
 
     print("\n" + "="*50)
     print("🎯 INTENTION DETECTION (The Good & The Bad)")
     print("="*50)
-    int_report = classification_report(all_int_labels_np, all_int_preds_np, target_names=INTENTION_NAMES, output_dict=True, zero_division=0)
-    _print_extreme_cases(int_report, INTENTION_NAMES)
+    _print_extreme_cases(int_labels_np, int_preds_np, "Intention")
 
     print("\n" + "="*50)
     print("🏃 ACTION PREDICTION (The Good & The Bad)")
     print("="*50)
-    act_report = classification_report(all_act_labels_np, all_act_preds_np, target_names=ACTION_NAMES, output_dict=True, zero_division=0)
-    _print_extreme_cases(act_report, ACTION_NAMES)
+    _print_extreme_cases(act_labels_np, act_preds_np, "Action")
 
-def _print_extreme_cases(report, class_names):
+def _print_extreme_cases(labels, preds, prefix):
+    # Dynamically grab the exact number of classes from the tensor shape
+    num_classes = labels.shape[1]
+    
+    # Calculate raw F1 scores directly, bypassing the buggy classification_report
+    f1_scores = f1_score(labels, preds, average=None, zero_division=0)
+    
     scores = []
-    for cls in class_names:
-        if cls in report:
-            scores.append((cls, report[cls]['f1-score']))
+    for i in range(num_classes):
+        scores.append((f"{prefix}_{i}", f1_scores[i]))
             
     scores.sort(key=lambda x: x[1])
     
