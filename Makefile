@@ -66,7 +66,7 @@ help:
 	@echo "  make advanced-single-gpu - Full training on a single GPU"
 	@echo "  make advanced-multi-gpu  - Full training using all detected GPUs"
 	@echo "  make advanced-cloud      - Auto-picks single/multi-GPU training"
-	@echo "  make professor-run       - One-command reproducible defense run"
+	@echo "  make professor-run       - Balances data and runs reproducible defense run"
 	@echo "  make organize-paper      - Compile BMVC-ready artifacts"
 	@echo "  make clean               - Remove Python cache junk"
 	@echo ""
@@ -170,8 +170,13 @@ advanced-cloud:
 # -----------------------------------------------------------------------------
 # Professor one-command run
 # -----------------------------------------------------------------------------
+.PHONY: balance-fane
+balance-fane:
+	@echo "⚖️  Balancing FANE dataset splits..."
+	@$(PYTHON) scripts/balance_fane.py
+
 .PHONY: professor-run
-professor-run:
+professor-run: balance-fane
 	@$(ensure_cache_dirs)
 	@mkdir -p $(PROFESSOR_OUTPUT_DIR)
 	@$(PYTHON) -c "import torch,sys; print('PyTorch:', torch.__version__); print('CUDA available:', torch.cuda.is_available()); print('CUDA devices:', torch.cuda.device_count()); sys.exit(0 if torch.cuda.is_available() else 1)" \
