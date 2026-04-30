@@ -38,7 +38,7 @@ def balance_splits():
             sample["split"] = "train"
             train_count += 1
         elif i < val_cutoff:
-            sample["split"] = "val"
+            sample["split"] = "validation"   # <--- FIX APPLIED HERE
             val_count += 1
         else:
             sample["split"] = "test"
@@ -50,9 +50,9 @@ def balance_splits():
 
     print("\n✅ FANE Data Splitting Complete!")
     print("New Balanced Distribution:")
-    print(f"   ├─ Train: {train_count} samples")
-    print(f"   ├─ Val:   {val_count} samples")
-    print(f"   └─ Test:  {test_count} samples")
+    print(f"   ├─ Train:      {train_count} samples")
+    print(f"   ├─ Validation: {val_count} samples")
+    print(f"   └─ Test:       {test_count} samples")
     print(f"\nSaved perfectly back into {target_json.name}!")
     print("You are ready to run your training script!")
 
