@@ -18,7 +18,7 @@ def generate_detailed_audit():
 
     try:
         train_loader, val_loader, test_loader = get_cloud_dataloaders(
-            batch_size=32, eval_batch_size=32, num_workers=4, distributed=False, sources=["mine_curated", "fane"]
+            batch_size=32, eval_batch_size=32, num_workers=4, distributed=False
         )
     except Exception as e:
         print(f"❌ Error loading dataloaders: {e}")
@@ -39,19 +39,17 @@ def generate_detailed_audit():
             if batch.get("images") is not None:
                 total_images += batch["images"].size(0)
 
-        # Deep Inspection: Find MINE vs FANE counts inside the dataset object
-        mine_count = "Check Logs"
-        fane_count = "Check Logs"
+        # Deep Inspection: Find MINE vs FANE counts directly from our custom MultimodalSample objects
+        mine_count = 0
+        fane_count = 0
         
         dataset = loader.dataset
-        # PyTorch usually combines multiple datasets using ConcatDataset
-        if hasattr(dataset, 'datasets'): 
-            try:
-                mine_count = len(dataset.datasets[0])
-                # If FANE wasn't loaded for this split (like Validation), set to 0
-                fane_count = len(dataset.datasets[1]) if len(dataset.datasets) > 1 else 0
-            except: 
-                pass
+        if hasattr(dataset, 'samples'):
+            for sample in dataset.samples:
+                if sample.source_dataset == "MINE_Llama_Curated":
+                    mine_count += 1
+                elif sample.source_dataset == "FANE_Distilled":
+                    fane_count += 1
 
         return {
             "name": split_name,
@@ -68,12 +66,8 @@ def generate_detailed_audit():
     test_data = scan_split(test_loader, "TEST")
 
     # Safely calculate grand totals
-    def safe_add(a, b, c):
-        try: return int(a) + int(b) + int(c)
-        except: return "Check Logs"
-
-    grand_mine = safe_add(train_data['mine'], val_data['mine'], test_data['mine'])
-    grand_fane = safe_add(train_data['fane'], val_data['fane'], test_data['fane'])
+    grand_mine = train_data['mine'] + val_data['mine'] + test_data['mine']
+    grand_fane = train_data['fane'] + val_data['fane'] + test_data['fane']
     grand_total = train_data['total'] + val_data['total'] + test_data['total']
     grand_images = train_data['images'] + val_data['images'] + test_data['images']
     grand_texts = train_data['texts'] + val_data['texts'] + test_data['texts']
@@ -102,6 +96,6 @@ def generate_detailed_audit():
     print(f" 🔹 TOTAL IMAGES PROCESSED:{grand_images:>9}")
     print(f" 🚀 ABSOLUTE TOTAL SAMPLES:{grand_total:>9}")
     print("═"*80)
-   
+    
 if __name__ == "__main__":
     generate_detailed_audit()
