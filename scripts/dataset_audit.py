@@ -102,7 +102,6 @@ def generate_detailed_audit():
     print(f" 🔹 TOTAL IMAGES PROCESSED:{grand_images:>9}")
     print(f" 🚀 ABSOLUTE TOTAL SAMPLES:{grand_total:>9}")
     print("═"*80)
-    print("💡 Tip: You can screenshot this directly for Dr. Imad to put in the paper!\n")
-
+   
 if __name__ == "__main__":
     generate_detailed_audit()
