@@ -10,26 +10,16 @@ sys.path.insert(0, str(project_root))
 from data.cloud_datasets import get_cloud_dataloaders
 
 def extract_image_paths(dataloader):
-    """Extracts all image paths/IDs from the dataset underneath the dataloader."""
+    """Extracts all image paths directly from the MultimodalSample objects."""
     paths = []
     
-    # We access the underlying dataset from the DataLoader
+    # Access the underlying CloudMultimodalDataset
     dataset = dataloader.dataset
     
-    # Try to extract the paths based on standard PyTorch / HuggingFace dataset structures
-    for i in range(len(dataset)):
-        # If your dataset returns a dictionary with 'image_path' or 'id'
-        item = dataset[i]
-        
-        if "image_path" in item:
-            paths.append(str(item["image_path"]))
-        elif "id" in item:
-            paths.append(str(item["id"]))
-        elif hasattr(dataset, "image_paths"): # Some custom datasets store it here
-            paths.append(str(dataset.image_paths[i]))
-        else:
-            # Fallback: Just return empty if we can't find the path string
-            pass 
+    # Loop directly through the dataclass objects in your SilverDataset architecture
+    for sample in dataset.samples:
+        if sample.image_path:
+            paths.append(str(sample.image_path))
             
     return paths
 
@@ -46,8 +36,7 @@ def run_leakage_check():
     test_paths = extract_image_paths(test_loader)
 
     if not train_paths or not test_paths:
-        print("\n❌ Could not find 'image_path' or 'id' strings in your dataset dictionary.")
-        print("To fix this, check what keys your Dataset class returns in __getitem__.")
+        print("\n❌ Could not find image paths. Please make sure dataset.samples is accessible.")
         return
 
     # Convert to sets for fast comparison
@@ -81,7 +70,8 @@ def run_leakage_check():
         name = Path(filename).stem
         # Remove trailing numbers (e.g., 'actor1_045' -> 'actor1_')
         prefix = re.sub(r'[0-9]+$', '', name)
-        return prefix
+        # Also remove trailing underscores just in case (e.g. 'actor1_' -> 'actor1')
+        return prefix.rstrip('_')
 
     train_prefixes = set(get_prefix(p) for p in train_set)
     test_prefixes = set(get_prefix(p) for p in test_set)
