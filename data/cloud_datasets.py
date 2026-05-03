@@ -48,9 +48,10 @@ class MultimodalSample:
     intention_labels: List[int] = field(default_factory=list)
     action_labels: List[int] = field(default_factory=list)
     source_dataset: str = "unknown"
+    label_strategy: str = "unknown"  # 🌟 Added to support the Dual-Teacher Verifier Script
 
 # ------------------------------------------------------------------------------
-# 2. The FANE Emotion Loader (JSON Distilled Version)
+# 2. The FANE Emotion Loader (JSON Distilled Version - OpenAI CLIP)
 # ------------------------------------------------------------------------------
 class FANELoader:
     @staticmethod
@@ -80,14 +81,22 @@ class FANELoader:
                 intent_lbl = item.get("intention_labels", [0])
                 action_lbl = item.get("action_labels", [0])
                 emo_lbl = item.get("emotion_label", 4)
+                
+                # 🌟 CRITICAL FIX: Pull from 'reasoning' (CLIP), fallback to 'text'
+                raw_text = item.get("reasoning", "")
+                if not raw_text:
+                    raw_text = item.get("text", "")
+                    
+                strategy = item.get("label_strategy", "Unknown")
 
                 samples.append(MultimodalSample(
-                    text="", # FANE is vision-only
+                    text=str(raw_text),
                     image_path=final_img_path,
                     emotion_label=emo_lbl,
                     intention_labels=intent_lbl,
                     action_labels=action_lbl,
-                    source_dataset="FANE_Distilled"
+                    source_dataset="FANE_Distilled",
+                    label_strategy=strategy
                 ))
             
             logger.info(f"✅ Loaded {len(samples)} FANE Distilled samples for {split} split.")
@@ -97,7 +106,7 @@ class FANELoader:
             return []
 
 # ------------------------------------------------------------------------------
-# 3. 🌟 The Curated MINE Loader (Llama Silver Standard)
+# 3. The Curated MINE Loader (Llama Silver Standard)
 # ------------------------------------------------------------------------------
 class MINECuratedLoader:
     @staticmethod
@@ -133,14 +142,22 @@ class MINECuratedLoader:
                 intent_lbl = item.get("intention_labels", [0])
                 action_lbl = item.get("action_labels", [0])
                 emo_lbl = item.get("emotion_label", 4)
+                
+                # 🌟 CRITICAL FIX: Ensure unified fallback logic
+                raw_text = item.get("reasoning", "")
+                if not raw_text:
+                    raw_text = item.get("text", "")
+                    
+                strategy = item.get("label_strategy", "Unknown")
 
                 samples.append(MultimodalSample(
-                    text=str(item.get("text", "")),
+                    text=str(raw_text),
                     image_path=final_img_path,
                     emotion_label=emo_lbl,
                     intention_labels=intent_lbl,
                     action_labels=action_lbl,
-                    source_dataset="MINE_Llama_Curated"
+                    source_dataset="MINE_Llama_Curated",
+                    label_strategy=strategy
                 ))
                 
             logger.info(f"✅ Loaded {len(samples)} MINE Curated samples for {split} split.")
